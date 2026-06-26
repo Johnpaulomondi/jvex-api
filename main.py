@@ -432,3 +432,36 @@ def support_chat():
         pass
 
     return jsonify({"reply": reply})
+
+# ── AI Support Chat (fixed – no DB dependency) ──
+@app.route("/api/support/chat", methods=["POST"])
+def support_chat():
+    data = request.json
+    message = data.get("message", "").lower()
+    reply = "I'm here to help! Ask me about Jvex Labs, your account, marketplace, freelancing, payments, or anything else."
+    
+    # Quick keyword matches
+    if "hello" in message or "hi" in message:
+        reply = "Hello! 👋 I'm the Jvex assistant. Ask me anything about the platform."
+    elif "deposit" in message:
+        reply = "To deposit, go to Dashboard > Overview and use Card or M‑Pesa. Funds appear instantly."
+    elif "withdraw" in message:
+        reply = "To withdraw, go to Dashboard > Overview > Withdraw to M‑Pesa. Admin approves quickly."
+    elif "freelanc" in message:
+        reply = "Freelancing is under Financial Markets. You need Regular tier or above. Buy tokens to bid on jobs."
+    elif "tier" in message or "subscription" in message:
+        reply = "Tiers: Basic (free), Regular (500/mo), Professional (1500/mo), Tycoon (3000/mo). Upgrade in Profile."
+    elif "pay" in message or "payment" in message:
+        reply = "We accept PayPal, Card/M‑Pesa via Stripe, Manual M‑Pesa, and Bank Transfer. Choose at checkout."
+    elif "cart" in message or "checkout" in message:
+        reply = "Your cart is at /cart. You can adjust quantities, select colors, then proceed to checkout."
+    elif "referral" in message or "team" in message:
+        reply = "Your referral link is in Dashboard > Teams. Earn commissions when friends join and transact."
+    elif "track" in message or "project" in message:
+        reply = "Use /track with your email and tracking ID to see your project status and chat with the team."
+    elif "balance" in message or "wallet" in message:
+        reply = "Your wallet balance is on the Dashboard Overview. You can deposit and withdraw there."
+    else:
+        reply = "I understand you're asking about something. Can you be more specific? I can help with deposits, withdrawals, freelancing, tiers, referrals, payments, tracking, and more. Or say 'hello' for an overview!"
+
+    return jsonify({"reply": reply})
