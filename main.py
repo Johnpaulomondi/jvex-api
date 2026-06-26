@@ -132,3 +132,12 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
+@app.route("/api/order/deliver", methods=["POST"])
+def deliver_order():
+    data = request.json
+    tracking_id = data.get("tracking_id")
+    # Update status to delivered
+    supabase.table("service_inquiries").update({"status": "delivered"}).eq("tracking_id", tracking_id).execute()
+    supabase.table("orders").update({"status": "delivered"}).eq("tracking_id", tracking_id).execute()
+    return jsonify({"status": "ok", "message": "Delivery confirmed"})
