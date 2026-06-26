@@ -141,3 +141,56 @@ def deliver_order():
     supabase.table("service_inquiries").update({"status": "delivered"}).eq("tracking_id", tracking_id).execute()
     supabase.table("orders").update({"status": "delivered"}).eq("tracking_id", tracking_id).execute()
     return jsonify({"status": "ok", "message": "Delivery confirmed"})
+
+# ── Contact info (never expose real credentials) ──
+@app.route("/api/contact", methods=["GET"])
+def contact_info():
+    return jsonify({
+        "whatsapp": os.getenv("WHATSAPP_NUMBER", "+254783282247"),
+        "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com"),
+    })
+
+# ── AI Support Chat ──
+@app.route("/api/support/chat", methods=["POST"])
+def support_chat():
+    data = request.json
+    message = data.get("message", "").lower()
+    user_id = data.get("user_id")
+    user_name = data.get("user_name", "User")
+
+    # Simple rule‑based AI (extend later)
+    if "deposit" in message:
+        reply = "To deposit, go to your Dashboard > Wallet and use Card or M‑Pesa. Need help with the amount?"
+    elif "withdraw" in message:
+        reply = "To withdraw, go to Dashboard > Wallet > Withdraw. Enter phone and amount. Admin approves within minutes."
+    elif "tier" in message or "subscription" in message:
+        reply = "You can view and upgrade your tier in Profile > Tier section. Choose any active plan."
+    elif "freelanc" in message:
+        reply = "Freelancing jobs are under Financial Markets. Bid using tokens. Buy tokens in Token Shop."
+    elif "paypal" in message:
+        reply = "We support PayPal on checkout. Your payment will be sent to our business PayPal."
+    elif "mpesa" in message or "card" in message:
+        reply = "We accept M‑Pesa and Visa/Mastercard. Payments are secure via Stripe."
+    elif "track" in message:
+        reply = "Use the Track Project page with your email and tracking ID."
+    elif "login" in message or "signup" in message:
+        reply = "You can login or sign up from the homepage or /login and /signup."
+    else:
+        # Escalate – send email/whatsapp to owner
+        owner_msg = f"Support escalation from {user_name} ({user_id}):\n\n{message}"
+        # Send email (requires SendGrid or similar – for now log)
+        print(f"ESCALATION: {owner_msg}")
+        reply = "I've passed your request to our team. We'll get back to you shortly."
+
+    # Store in support chat history
+    try:
+        supabase.table("support_chat_sessions").insert({
+            "user_id": user_id,
+            "message": message,
+            "reply": reply,
+            "created_at": "now()"
+        }).execute()
+    except:
+        pass
+
+    return jsonify({"reply": reply})
