@@ -288,3 +288,50 @@ def og_share(tracking_id):
         return html
     except:
         return fallback
+
+# ── OG Tag Service (bulletproof) ──
+@app.route("/og/s/<tracking_id>", methods=["GET"])
+def og_share(tracking_id):
+    def render_html(title, desc, image, url):
+        return f"""<!doctype html><html lang="en"><head>
+        <meta charset="UTF-8" />
+        <meta property="og:title" content="{title}" />
+        <meta property="og:description" content="{desc}" />
+        <meta property="og:image" content="{image}" />
+        <meta property="og:url" content="{url}" />
+        <meta property="og:type" content="product" />
+        <meta http-equiv="refresh" content="0;url={url}" />
+        </head><body><p>Redirecting…</p></body></html>"""
+
+    share_url = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
+
+    # 1. Try query params first (most reliable)
+    name = request.args.get('name')
+    desc = request.args.get('desc')
+    img = request.args.get('img')
+    if name and img:
+        return render_html(name, desc or "Check out this product on Jvex Labs.", img, share_url)
+
+    # 2. Try database
+    try:
+        share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
+        if share.data:
+            item = None
+            if share.data['product_type'] == 'product':
+                product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
+                item = product.data
+            elif share.data['product_type'] == 'service':
+                service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
+                item = service.data
+            if item:
+                return render_html(
+                    item.get('name') or item.get('service_name') or 'Jvex Product',
+                    (item.get('description') or '')[:200],
+                    item.get('image_url') or 'https://jvex-labs-backup.vercel.app/logo.png',
+                    share_url
+                )
+    except:
+        pass
+
+    # 3. Fallback
+    return render_html("Jvex Labs – Shared Product", "Discover products and services on Jvex Labs.", "https://jvex-labs-backup.vercel.app/logo.png", share_url)
