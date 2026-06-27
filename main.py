@@ -246,3 +246,54 @@ def support_chat():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
+# ── Sales Share Tracking ──
+@app.route("/api/sales/share", methods=["POST"])
+def sales_share():
+    data = request.json
+    user_id = data.get("user_id")
+    product_id = data.get("product_id")
+    product_type = data.get("product_type", "product")
+    tracking_id = f"SH-{uuid.uuid4().hex[:8]}"
+    supabase.table('sales_shares').insert({
+        "user_id": user_id,
+        "product_id": product_id,
+        "product_type": product_type,
+        "tracking_id": tracking_id
+    }).execute()
+    # Return the shareable link
+    link = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
+    return jsonify({"status": "success", "link": link})
+
+@app.route("/api/sales/track/<tracking_id>", methods=["GET"])
+def sales_track(tracking_id):
+    # Increment views
+    supabase.rpc('increment_share_views', {'p_tracking_id': tracking_id}).execute()
+    # Fetch the share data
+    share = supabase.table('sales_shares').select('*, products(*)').eq('tracking_id', tracking_id).single().execute()
+    if share.data:
+        return jsonify(share.data)
+    return jsonify({"error": "Not found"}), 404
+
+@app.route("/api/sales/inquiry", methods=["POST"])
+def sales_inquiry():
+    data = request.json
+    tracking_id = data.get("tracking_id")
+    supabase.rpc('increment_share_inquiries', {'p_tracking_id': tracking_id}).execute()
+    return jsonify({"status": "ok"})
+
+@app.route("/api/sales/stats/<user_id>", methods=["GET"])
+def sales_stats(user_id):
+    # Get total shares, views, inquiries, earnings
+    shares = supabase.table('sales_shares').select('*').eq('user_id', user_id).execute()
+    total_shares = len(shares.data)
+    total_views = sum(s.get('views', 0) for s in shares.data)
+    total_inquiries = sum(s.get('inquiries', 0) for s in shares.data)
+    earnings = supabase.table('member_earnings').select('amount').eq('user_id', user_id).eq('source', 'sales_commission').execute()
+    total_earnings = sum(e.get('amount', 0) for e in earnings.data)
+    return jsonify({
+        "shares": total_shares,
+        "views": total_views,
+        "inquiries": total_inquiries,
+        "earnings": total_earnings
+    })
