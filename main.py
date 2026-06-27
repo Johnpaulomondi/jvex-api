@@ -14,69 +14,78 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-def update_balance(user_id: str, amount: float):
+def update_balance(user_id, amount):
     supabase.rpc('adjust_balance', {'p_user_id': user_id, 'p_amount': amount}).execute()
 
-def record_transaction(user_id: str, tx_type: str, amount: float, status: str, desc: str, ref: str = '', method: str = ''):
+def record_transaction(user_id, tx_type, amount, status, desc, ref='', method=''):
     supabase.table('member_transactions').insert({
         'user_id': user_id, 'type': tx_type, 'amount': amount,
         'status': status, 'description': desc,
         'flutterwave_ref': ref, 'payment_method': method
     }).execute()
 
-def get_user_tier(user_id: str):
-    user = supabase.table('users').select('tier_id').eq('id', user_id).single().execute()
-    if not user.data or not user.data.get('tier_id'): return None
-    tier = supabase.table('member_tiers').select('*').eq('id', user.data['tier_id']).single().execute()
-    return tier.data if tier.data else None
-
-def process_direct_sale(seller_id: str, gross_amount: float, product_ref: str):
-    tier = get_user_tier(seller_id)
-    if not tier: return
-    rate = float(tier.get('direct_sales_rate', 0))
-    commission = round(gross_amount * rate, 2)
-    update_balance(seller_id, commission)
-    supabase.table('member_earnings').insert({
-        'user_id': seller_id, 'amount': commission, 'source_id': 'direct_sale',
-        'created_at': 'now()'
-    }).execute()
-    record_transaction(seller_id, 'sale_commission', commission, 'completed', f"Direct sale {product_ref}")
-
-def process_referral_payout(referred_user_id: str, tier_purchased_id: str):
-    ref = supabase.table('referral_teams').select('referrer_id').eq('referred_id', referred_user_id).single().execute()
-    if not ref.data: return
-    referrer_id = ref.data['referrer_id']
-    if referrer_id == referred_user_id: return
-    existing = supabase.table('member_earnings').select('id').eq('user_id', referrer_id).eq('source_id', 'referral').eq('reference_id', referred_user_id).eq('tier_id', tier_purchased_id).execute()
-    if existing.data and len(existing.data) > 0: return
-    tier = supabase.table('member_tiers').select('*').eq('id', tier_purchased_id).single().execute()
-    if not tier.data: return
-    referral_rate = float(tier.data.get('referral_l1_rate', 0))
-    tier_price = float(tier.data.get('price_kes', 0))
-    commission = round(tier_price * referral_rate, 2)
-    update_balance(referrer_id, commission)
-    supabase.table('member_earnings').insert({
-        'user_id': referrer_id, 'amount': commission, 'source_id': 'referral',
-        'reference_id': referred_user_id, 'tier_id': tier_purchased_id, 'created_at': 'now()'
-    }).execute()
-    record_transaction(referrer_id, 'referral_commission', commission, 'completed', f"Referral payout for user {referred_user_id}")
+@app.route("/")
+def home():
+    return jsonify({"status": "Jvex API running"})
 
 @app.route("/api/health")
 def health():
     h = {"api": "online", "supabase": False, "paystack": False}
-    try: supabase.table('users').select('id').limit(1).execute(); h["supabase"] = True
+    try:
+        supabase.table('users').select('id').limit(1).execute()
+        h["supabase"] = True
     except: pass
-    try: requests.get("https://api.paystack.co/transaction/verify/000000", headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"}); h["paystack"] = True
+    try:
+        requests.get("https://api.paystack.co/transaction/verify/000000", headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"})
+        h["paystack"] = True
     except: pass
     return jsonify(h)
 
-@app.route("/")
-def home(): return jsonify({"status": "Jvex API running"})
-
 @app.route("/api/contact", methods=["GET"])
 def contact_info():
-    return jsonify({"whatsapp": os.getenv("WHATSAPP_NUMBER", "+254783282247"), "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")})
+    return jsonify({
+        "whatsapp": os.getenv("WHATSAPP_NUMBER", "+254783282247"),
+        "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")
+    })
 
+# ── OG Tag endpoint (for social sharing) ──
+@app.route("/og/s/<tracking_id>", methods=["GET"])
+def og_share(tracking_id):
+    share_url = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
+    name = request.args.get('name', 'Jvex Labs – Shared Product')
+    desc = request.args.get('desc', 'Discover products and services on Jvex Labs.')
+    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
+
+    # If no query params, try database
+    if not request.args.get('name') and not request.args.get('img'):
+        try:
+            share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
+            if share.data:
+                if share.data['product_type'] == 'product':
+                    product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
+                    item = product.data
+                else:
+                    service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
+                    item = service.data
+                if item:
+                    name = item.get('name') or item.get('service_name') or name
+                    desc = (item.get('description') or '')[:200]
+                    img = item.get('image_url') or img
+        except:
+            pass
+
+    html = f"""<!doctype html><html lang="en"><head>
+    <meta charset="UTF-8" />
+    <meta property="og:title" content="{name}" />
+    <meta property="og:description" content="{desc}" />
+    <meta property="og:image" content="{img}" />
+    <meta property="og:url" content="{share_url}" />
+    <meta property="og:type" content="product" />
+    <meta http-equiv="refresh" content="0;url={share_url}" />
+    </head><body><p>Redirecting…</p></body></html>"""
+    return html
+
+# ── Paystack ──
 @app.route("/api/paystack/initialize", methods=["POST"])
 def paystack_initialize():
     data = request.json
@@ -87,7 +96,8 @@ def paystack_initialize():
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}", "Content-Type": "application/json"}
     resp = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=headers)
     result = resp.json()
-    if result.get("status"): return jsonify({"status": "success", "authorization_url": result["data"]["authorization_url"], "reference": ref})
+    if result.get("status"):
+        return jsonify({"status": "success", "authorization_url": result["data"]["authorization_url"], "reference": ref})
     return jsonify({"status": "error", "detail": result.get("message", "Failed")}), 400
 
 @app.route("/api/paystack/verify/<reference>", methods=["GET"])
@@ -95,7 +105,8 @@ def paystack_verify(reference):
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
     resp = requests.get(f"https://api.paystack.co/transaction/verify/{reference}", headers=headers)
     result = resp.json()
-    if result.get("status") and result["data"]["status"] == "success": return jsonify({"status": "success", "data": result["data"]})
+    if result.get("status") and result["data"]["status"] == "success":
+        return jsonify({"status": "success", "data": result["data"]})
     return jsonify({"status": "failed"}), 400
 
 @app.route("/api/paystack/callback", methods=["GET", "POST"])
@@ -103,46 +114,37 @@ def paystack_callback():
     if request.method == "POST":
         event = request.json
         if event and event.get("event") == "charge.success":
-            data = event["data"]
-            reference = data.get("reference")
-            meta = data.get("metadata", {})
+            d = event["data"]
+            meta = d.get("metadata", {})
             user_id = meta.get("user_id")
             tx_type = meta.get("tx_type", "deposit")
-            amount = float(data.get("amount", 0)) / 100
-            if user_id: update_balance(user_id, amount)
-            record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {reference}", reference, "paystack")
-            if tx_type == "tier_upgrade":
-                new_tier_id = meta.get("tier_id")
-                if new_tier_id and user_id:
-                    supabase.table('users').update({"tier_id": new_tier_id, "tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
-                    process_referral_payout(user_id, new_tier_id)
-            seller_id = meta.get("seller_id")
-            if seller_id and tx_type == "purchase":
-                process_direct_sale(seller_id, amount, meta.get("product_ref", "unknown"))
+            amount = float(d.get("amount", 0)) / 100
+            if user_id:
+                update_balance(user_id, amount)
+            record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {d.get('reference')}", d.get('reference'), "paystack")
+            if tx_type == "tier_upgrade" and meta.get("tier_id"):
+                supabase.table('users').update({"tier_id": meta["tier_id"], "tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
         return jsonify({"status": "success"})
     else:
         reference = request.args.get("reference")
-        if not reference: return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
-        verify_resp = requests.get(f"https://api.paystack.co/transaction/verify/{reference}", headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"})
-        verify_data = verify_resp.json()
+        if not reference:
+            return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
+        verify = requests.get(f"https://api.paystack.co/transaction/verify/{reference}", headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"})
+        verify_data = verify.json()
         if verify_data.get("status") and verify_data["data"]["status"] == "success":
             meta = verify_data["data"].get("metadata", {})
             user_id = meta.get("user_id")
             tx_type = meta.get("tx_type", "deposit")
             amount = float(verify_data["data"].get("amount", 0)) / 100
-            if user_id: update_balance(user_id, amount)
+            if user_id:
+                update_balance(user_id, amount)
             record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {reference}", reference, "paystack")
-            if tx_type == "tier_upgrade":
-                new_tier_id = meta.get("tier_id")
-                if new_tier_id and user_id:
-                    supabase.table('users').update({"tier_id": new_tier_id, "tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
-                    process_referral_payout(user_id, new_tier_id)
-            seller_id = meta.get("seller_id")
-            if seller_id and tx_type == "purchase":
-                process_direct_sale(seller_id, amount, meta.get("product_ref", "unknown"))
+            if tx_type == "tier_upgrade" and meta.get("tier_id"):
+                supabase.table('users').update({"tier_id": meta["tier_id"], "tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
             return redirect("https://jvex-labs-backup.vercel.app/payment-success")
         return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
 
+# ── Wallet ──
 @app.route("/api/wallet/deposit", methods=["POST"])
 def wallet_deposit():
     data = request.json
@@ -154,7 +156,8 @@ def wallet_deposit():
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}", "Content-Type": "application/json"}
     resp = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=headers)
     result = resp.json()
-    if result.get("status"): return jsonify({"status": "success", "authorization_url": result["data"]["authorization_url"], "reference": ref})
+    if result.get("status"):
+        return jsonify({"status": "success", "authorization_url": result["data"]["authorization_url"], "reference": ref})
     return jsonify({"status": "error", "detail": result.get("message", "Failed")}), 400
 
 @app.route("/api/wallet/withdraw", methods=["POST"])
@@ -164,7 +167,8 @@ def wallet_withdraw():
     amount = float(data.get("amount"))
     phone = data.get("phone")
     user = supabase.table('users').select('balance').eq('id', user_id).single().execute()
-    if user.data.get('balance', 0) < amount: return jsonify({"status": "error", "detail": "Insufficient balance"}), 400
+    if user.data.get('balance', 0) < amount:
+        return jsonify({"status": "error", "detail": "Insufficient balance"}), 400
     update_balance(user_id, -amount)
     ref = f"WTH-{uuid.uuid4().hex[:8]}"
     record_transaction(user_id, "withdrawal", amount, "pending", f"M‑Pesa withdrawal to {phone}", ref, "mpesa")
@@ -182,41 +186,18 @@ def wallet_transactions():
     txns = supabase.table('member_transactions').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(20).execute()
     return jsonify(txns.data)
 
-@app.route("/api/wallet/pay", methods=["POST"])
-def wallet_pay():
-    data = request.json
-    user_id = data.get("user_id")
-    amount = float(data.get("amount"))
-    desc = data.get("description", "Purchase")
-    seller_id = data.get("seller_id")
-    user = supabase.table('users').select('balance').eq('id', user_id).single().execute()
-    if user.data.get('balance', 0) < amount: return jsonify({"status": "error", "detail": "Insufficient balance"}), 400
-    update_balance(user_id, -amount)
-    ref = f"BAL-{uuid.uuid4().hex[:8]}"
-    record_transaction(user_id, "purchase", amount, "completed", desc, ref, "balance")
-    if seller_id: process_direct_sale(seller_id, amount, desc)
-    return jsonify({"status": "success", "message": "Payment successful"})
-
+# ── Sales Share ──
 @app.route("/api/sales/share", methods=["POST"])
 def sales_share():
     data = request.json
-    user_id = data.get("user_id")
-    product_id = data.get("product_id")
     tracking_id = f"SH-{uuid.uuid4().hex[:8]}"
-    supabase.table('sales_shares').insert({"user_id": user_id, "product_id": product_id, "product_type": data.get("product_type", "product"), "tracking_id": tracking_id}).execute()
+    supabase.table('sales_shares').insert({
+        "user_id": data.get("user_id"),
+        "product_id": data.get("product_id"),
+        "product_type": data.get("product_type", "product"),
+        "tracking_id": tracking_id
+    }).execute()
     return jsonify({"status": "success", "link": f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"})
-
-@app.route("/api/sales/track/<tracking_id>", methods=["GET"])
-def sales_track(tracking_id):
-    supabase.rpc('increment_share_views', {'p_tracking_id': tracking_id}).execute()
-    share = supabase.table('sales_shares').select('*, products(*)').eq('tracking_id', tracking_id).single().execute()
-    if share.data: return jsonify(share.data)
-    return jsonify({"error": "Not found"}), 404
-
-@app.route("/api/sales/inquiry", methods=["POST"])
-def sales_inquiry():
-    supabase.rpc('increment_share_inquiries', {'p_tracking_id': request.json.get("tracking_id")}).execute()
-    return jsonify({"status": "ok"})
 
 @app.route("/api/sales/stats/<user_id>", methods=["GET"])
 def sales_stats(user_id):
@@ -228,62 +209,15 @@ def sales_stats(user_id):
     total_earnings = sum(e.get('amount', 0) for e in earnings.data)
     return jsonify({"shares": total_shares, "views": total_views, "inquiries": total_inquiries, "earnings": total_earnings})
 
+# ── Support Chat ──
 @app.route("/api/support/chat", methods=["POST"])
 def support_chat():
-    data = request.json
-    msg = data.get("message", "").lower().strip()
-    k = {"hello":"Hello! 👋 Ask me about Jvex.", "deposit":"Use Dashboard → Deposit via Paystack.", "withdraw":"Dashboard → Withdraw. Admin approves."}
-    reply = None
-    for kw, resp in k.items():
-        if kw in msg: reply = resp; break
-    if not reply: reply = f"Contact us: WhatsApp {os.getenv('WHATSAPP_NUMBER','+254783282247')} | Email {os.getenv('SUPPORT_EMAIL','omoshdeleon47@gmail.com')}"
+    msg = request.json.get("message", "").lower()
+    reply = "Hello! 👋 Ask me anything about Jvex."
+    if "deposit" in msg: reply = "Deposit via Paystack in Dashboard."
+    elif "withdraw" in msg: reply = "Withdraw in Dashboard. Admin approves."
+    elif "tier" in msg: reply = "Upgrade tiers in Profile."
     return jsonify({"reply": reply})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
-
-# ── OG Tag Service for Social Sharing ──
-@app.route("/og/s/<tracking_id>", methods=["GET"])
-    except:
-        return fallback
-
-# ── OG Tag Service (bulletproof) ──
-@app.route("/og/s/<tracking_id>", methods=["GET"])
-
-@app.route("/og/s/<tracking_id>", methods=["GET"])
-def og_share(tracking_id):
-    share_url = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
-
-    # Try query params first (always available when our frontend shares)
-    name = request.args.get('name')
-    desc = request.args.get('desc', 'Check out this product on Jvex Labs.')
-    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
-
-    # If no query params, try database as backup
-    if not name or not img:
-        try:
-            share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
-            if share.data:
-                if share.data['product_type'] == 'product':
-                    product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
-                    item = product.data
-                else:
-                    service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
-                    item = service.data
-                if item:
-                    name = item.get('name') or item.get('service_name') or 'Jvex Product'
-                    desc = (item.get('description') or '')[:200]
-                    img = item.get('image_url') or img
-        except:
-            pass
-
-    html = f"""<!doctype html><html lang="en"><head>
-    <meta charset="UTF-8" />
-    <meta property="og:title" content="{name}" />
-    <meta property="og:description" content="{desc}" />
-    <meta property="og:image" content="{img}" />
-    <meta property="og:url" content="{share_url}" />
-    <meta property="og:type" content="product" />
-    <meta http-equiv="refresh" content="0;url={share_url}" />
-    </head><body><p>Redirecting…</p></body></html>"""
-    return html
