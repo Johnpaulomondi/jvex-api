@@ -170,6 +170,7 @@ def paystack_callback():
                 new_tier_id = meta.get("tier_id")
                 if new_tier_id and user_id:
                     supabase.table('users').update({"tier_id": new_tier_id}).eq('id', user_id).execute()
+                    supabase.table('users').update({"tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
                     # Trigger referral payout for the referrer
                     process_referral_payout(user_id, new_tier_id)
 
@@ -201,6 +202,7 @@ def paystack_callback():
                 new_tier_id = meta.get("tier_id")
                 if new_tier_id and user_id:
                     supabase.table('users').update({"tier_id": new_tier_id}).eq('id', user_id).execute()
+                    supabase.table('users').update({"tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
                     process_referral_payout(user_id, new_tier_id)
 
             seller_id = meta.get("seller_id")
@@ -437,3 +439,30 @@ def og_share(tracking_id):
 </body>
 </html>"""
     return html
+
+@app.route("/api/tiers/check-expiry", methods=["POST"])
+def check_tier_expiry():
+    # This endpoint should be called by a cron job (e.g., daily)
+    expired = supabase.table('users').select('id, tier_id, tier_expiry').lt('tier_expiry', 'now()').execute()
+    basic_id = supabase.table('member_tiers').select('id').eq('name', 'Basic').single().execute()
+    if basic_id.data:
+        for user in expired.data:
+            supabase.table('users').update({'tier_id': basic_id.data['id'], 'tier_expiry': None}).eq('id', user['id']).execute()
+            supabase.table('notifications').insert({
+                'user_id': user['id'],
+                'message': 'Your subscription has expired. You have been downgraded to Basic.',
+                'created_at': 'now()'
+            }).execute()
+    return jsonify({"status": "ok", "expired": len(expired.data)})
+
+@app.route("/api/tiers/notify-expiry", methods=["POST"])
+def notify_expiry():
+    # Notify users whose tier expires in 5 days
+    upcoming = supabase.table('users').select('id, tier_id, tier_expiry').eq('tier_expiry', 'now() + interval \'5 days\'').execute()
+    for user in upcoming.data:
+        supabase.table('notifications').insert({
+            'user_id': user['id'],
+            'message': 'Your subscription expires in 5 days. Renew or upgrade to keep your benefits.',
+            'created_at': 'now()'
+        }).execute()
+    return jsonify({"status": "ok", "notified": len(upcoming.data)})
