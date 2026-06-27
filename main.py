@@ -244,94 +244,46 @@ if __name__ == "__main__":
 
 # ── OG Tag Service for Social Sharing ──
 @app.route("/og/s/<tracking_id>", methods=["GET"])
-def og_share(tracking_id):
-    fallback = f"""<!doctype html><html lang="en"><head>
-    <meta property="og:title" content="Jvex Labs – Shared Product" />
-    <meta property="og:description" content="Discover products and services on Jvex Labs." />
-    <meta property="og:image" content="https://jvex-labs-backup.vercel.app/logo.png" />
-    <meta property="og:url" content="https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
-    <meta http-equiv="refresh" content="0;url=https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
-    </head><body><p>Redirecting…</p></body></html>"""
-
-    try:
-        # Try to fetch share data from Supabase
-        share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
-        if not share.data:
-            return fallback
-
-        item = None
-        if share.data['product_type'] == 'product':
-            product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
-            item = product.data
-        elif share.data['product_type'] == 'service':
-            service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
-            item = service.data
-
-        name = (item.get('name') or item.get('service_name') or 'Jvex Product') if item else 'Jvex Product'
-        desc = (item.get('description', '')[:200] or 'Check out this product on Jvex Labs.') if item else 'Discover Jvex Labs.'
-        image = item.get('image_url') if item else None
-        if not image:
-            # Try query params as fallback
-            image = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
-            name = request.args.get('name', name)
-            desc = request.args.get('desc', desc)
-
-        html = f"""<!doctype html><html lang="en"><head>
-        <meta charset="UTF-8" />
-        <meta property="og:title" content="{name}" />
-        <meta property="og:description" content="{desc}" />
-        <meta property="og:image" content="{image}" />
-        <meta property="og:url" content="https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
-        <meta property="og:type" content="product" />
-        <meta http-equiv="refresh" content="0;url=https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
-        </head><body><p>Redirecting…</p></body></html>"""
-        return html
     except:
         return fallback
 
 # ── OG Tag Service (bulletproof) ──
 @app.route("/og/s/<tracking_id>", methods=["GET"])
-def og_share(tracking_id):
-    def render_html(title, desc, image, url):
-        return f"""<!doctype html><html lang="en"><head>
-        <meta charset="UTF-8" />
-        <meta property="og:title" content="{title}" />
-        <meta property="og:description" content="{desc}" />
-        <meta property="og:image" content="{image}" />
-        <meta property="og:url" content="{url}" />
-        <meta property="og:type" content="product" />
-        <meta http-equiv="refresh" content="0;url={url}" />
-        </head><body><p>Redirecting…</p></body></html>"""
 
+@app.route("/og/s/<tracking_id>", methods=["GET"])
+def og_share(tracking_id):
     share_url = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
 
-    # 1. Try query params first (most reliable)
+    # Try query params first (always available when our frontend shares)
     name = request.args.get('name')
-    desc = request.args.get('desc')
-    img = request.args.get('img')
-    if name and img:
-        return render_html(name, desc or "Check out this product on Jvex Labs.", img, share_url)
+    desc = request.args.get('desc', 'Check out this product on Jvex Labs.')
+    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
 
-    # 2. Try database
-    try:
-        share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
-        if share.data:
-            item = None
-            if share.data['product_type'] == 'product':
-                product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
-                item = product.data
-            elif share.data['product_type'] == 'service':
-                service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
-                item = service.data
-            if item:
-                return render_html(
-                    item.get('name') or item.get('service_name') or 'Jvex Product',
-                    (item.get('description') or '')[:200],
-                    item.get('image_url') or 'https://jvex-labs-backup.vercel.app/logo.png',
-                    share_url
-                )
-    except:
-        pass
+    # If no query params, try database as backup
+    if not name or not img:
+        try:
+            share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
+            if share.data:
+                if share.data['product_type'] == 'product':
+                    product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
+                    item = product.data
+                else:
+                    service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
+                    item = service.data
+                if item:
+                    name = item.get('name') or item.get('service_name') or 'Jvex Product'
+                    desc = (item.get('description') or '')[:200]
+                    img = item.get('image_url') or img
+        except:
+            pass
 
-    # 3. Fallback
-    return render_html("Jvex Labs – Shared Product", "Discover products and services on Jvex Labs.", "https://jvex-labs-backup.vercel.app/logo.png", share_url)
+    html = f"""<!doctype html><html lang="en"><head>
+    <meta charset="UTF-8" />
+    <meta property="og:title" content="{name}" />
+    <meta property="og:description" content="{desc}" />
+    <meta property="og:image" content="{img}" />
+    <meta property="og:url" content="{share_url}" />
+    <meta property="og:type" content="product" />
+    <meta http-equiv="refresh" content="0;url={share_url}" />
+    </head><body><p>Redirecting…</p></body></html>"""
+    return html
