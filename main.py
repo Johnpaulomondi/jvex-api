@@ -14,38 +14,88 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# ── Helpers ──
+# ── Helper: update user balance ──
 def update_balance(user_id: str, amount: float):
     supabase.rpc('adjust_balance', {'p_user_id': user_id, 'p_amount': amount}).execute()
 
-def record_transaction(user_id: str, tx_type: str, amount: float, status: str, desc: str, ref: str = '', method: str = ''):
+# ── Helper: record a transaction ──
+def record_transaction(user_id: str, tx_type: str, amount: float, status: str, desc: str, ref: str = '', method: str = '', net_amount: float = None):
     supabase.table('member_transactions').insert({
         'user_id': user_id, 'type': tx_type, 'amount': amount,
         'status': status, 'description': desc,
-        'flutterwave_ref': ref, 'payment_method': method
+        'flutterwave_ref': ref, 'payment_method': method,
+        'net_amount': net_amount
     }).execute()
 
-def credit_referrer(referrer_id: str, purchase_amount: float):
-    # get referrer's tier and commission rate
-    ref_user = supabase.table('users').select('tier_id').eq('id', referrer_id).single().execute()
-    tier_id = ref_user.data.get('tier_id') if ref_user.data else None
-    rate = 0.05  # default Basic
-    if tier_id:
-        tier = supabase.table('member_tiers').select('*').eq('id', tier_id).single().execute()
-        if tier.data:
-            rate = float(tier.data.get('direct_sales_rate', 0.05))
-    commission = purchase_amount * rate
-    # Insert into member_earnings
+# ── Get user's tier data ──
+def get_user_tier(user_id: str):
+    user = supabase.table('users').select('tier_id').eq('id', user_id).single().execute()
+    if not user.data or not user.data.get('tier_id'):
+        return None
+    tier = supabase.table('member_tiers').select('*').eq('id', user.data['tier_id']).single().execute()
+    return tier.data if tier.data else None
+
+# ── Process direct sales commission (seller's tier) ──
+def process_direct_sale(seller_id: str, gross_amount: float, product_ref: str):
+    tier = get_user_tier(seller_id)
+    if not tier:
+        return  # no commission for unknown tier
+    rate = float(tier.get('direct_sales_rate', 0))
+    commission = round(gross_amount * rate, 2)
+    net_jvex = round(gross_amount - commission, 2)
+
+    # Credit seller's balance with commission
+    update_balance(seller_id, commission)
+    # Record seller's earning
+    supabase.table('member_earnings').insert({
+        'user_id': seller_id,
+        'amount': commission,
+        'source': 'direct_sale',
+        'created_at': 'now()'
+    }).execute()
+    # Record the sale transaction with net JVEX amount
+    record_transaction(seller_id, 'sale_commission', commission, 'completed',
+                       f"Direct sale commission for {product_ref} (rate {rate*100}%)",
+                       ref=f"DS-{uuid.uuid4().hex[:8]}", method='paystack', net_amount=net_jvex)
+    return net_jvex, commission
+
+# ── Process referral payout (when referred user upgrades tier) ──
+def process_referral_payout(referred_user_id: str, tier_purchased_id: str):
+    # Find who referred this user
+    ref = supabase.table('referral_teams').select('referrer_id').eq('referred_id', referred_user_id).single().execute()
+    if not ref.data:
+        return
+    referrer_id = ref.data['referrer_id']
+    # Prevent self-referral
+    if referrer_id == referred_user_id:
+        return
+    # Check for duplicate payouts (already paid for this tier?)
+    existing = supabase.table('member_earnings').select('id').eq('user_id', referrer_id).eq('source', 'referral').eq('reference_id', referred_user_id).eq('tier_id', tier_purchased_id).execute()
+    if existing.data and len(existing.data) > 0:
+        return  # already paid
+    # Get the purchased tier's referral_l1_rate (or appropriate level)
+    tier = supabase.table('member_tiers').select('*').eq('id', tier_purchased_id).single().execute()
+    if not tier.data:
+        return
+    referral_rate = float(tier.data.get('referral_l1_rate', 0))
+    tier_price = float(tier.data.get('price_kes', 0))
+    commission = round(tier_price * referral_rate, 2)
+
+    # Credit referrer
+    update_balance(referrer_id, commission)
     supabase.table('member_earnings').insert({
         'user_id': referrer_id,
         'amount': commission,
-        'source': 'sales_commission',
+        'source': 'referral',
+        'reference_id': referred_user_id,
+        'tier_id': tier_purchased_id,
         'created_at': 'now()'
     }).execute()
-    # Optionally add to balance
-    update_balance(referrer_id, commission)
+    record_transaction(referrer_id, 'referral_commission', commission, 'completed',
+                       f"Referral payout for user {referred_user_id} upgrading to {tier.data['name']}",
+                       ref=f"REF-{uuid.uuid4().hex[:8]}", method='system')
 
-# ── Health ──
+# ── Health check ──
 @app.route("/api/health")
 def health():
     h = {"api": "online", "supabase": False, "paystack": False}
@@ -97,11 +147,10 @@ def paystack_verify(reference):
         return jsonify({"status": "success", "data": result["data"]})
     return jsonify({"status": "failed"}), 400
 
-# ── Paystack Callback (Webhook) ──
+# ── Paystack Callback (webhook + redirect) ──
 @app.route("/api/paystack/callback", methods=["GET", "POST"])
 def paystack_callback():
     if request.method == "POST":
-        # Paystack webhook sends JSON in body
         event = request.json
         if event and event.get("event") == "charge.success":
             data = event["data"]
@@ -110,21 +159,29 @@ def paystack_callback():
             user_id = meta.get("user_id")
             tx_type = meta.get("tx_type", "deposit")
             amount = float(data.get("amount", 0)) / 100
+
             if user_id:
                 update_balance(user_id, amount)
-            record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {reference}", reference, "paystack")
-            # Handle tier upgrade if metadata indicates
+            record_transaction(user_id or "guest", tx_type, amount, "completed",
+                               f"Paystack payment {reference}", reference, "paystack")
+
+            # Tier upgrade handling
             if tx_type == "tier_upgrade":
                 new_tier_id = meta.get("tier_id")
                 if new_tier_id and user_id:
                     supabase.table('users').update({"tier_id": new_tier_id}).eq('id', user_id).execute()
-            # Handle referral commission
-            referrer_id = meta.get("referrer_id")
-            if referrer_id and tx_type == "purchase":
-                credit_referrer(referrer_id, amount)
+                    # Trigger referral payout for the referrer
+                    process_referral_payout(user_id, new_tier_id)
+
+            # Direct sales commission (when purchase is made via shared link)
+            seller_id = meta.get("seller_id")
+            if seller_id and tx_type == "purchase":
+                product_ref = meta.get("product_ref", "unknown")
+                process_direct_sale(seller_id, amount, product_ref)
+
         return jsonify({"status": "success"})
     else:
-        # GET callback from redirect
+        # GET redirect from Paystack
         reference = request.args.get("reference")
         if not reference:
             return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
@@ -137,40 +194,24 @@ def paystack_callback():
             amount = float(verify_data["data"].get("amount", 0)) / 100
             if user_id:
                 update_balance(user_id, amount)
-            record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {reference}", reference, "paystack")
-            # Tier upgrade
+            record_transaction(user_id or "guest", tx_type, amount, "completed",
+                               f"Paystack payment {reference}", reference, "paystack")
+
             if tx_type == "tier_upgrade":
                 new_tier_id = meta.get("tier_id")
                 if new_tier_id and user_id:
                     supabase.table('users').update({"tier_id": new_tier_id}).eq('id', user_id).execute()
-            # Referral
-            referrer_id = meta.get("referrer_id")
-            if referrer_id and tx_type == "purchase":
-                credit_referrer(referrer_id, amount)
+                    process_referral_payout(user_id, new_tier_id)
+
+            seller_id = meta.get("seller_id")
+            if seller_id and tx_type == "purchase":
+                product_ref = meta.get("product_ref", "unknown")
+                process_direct_sale(seller_id, amount, product_ref)
+
             return redirect("https://jvex-labs-backup.vercel.app/payment-success")
         return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
 
-# ── Internal Balance Payment (for purchases with sufficient balance) ──
-@app.route("/api/wallet/pay", methods=["POST"])
-def wallet_pay():
-    data = request.json
-    user_id = data.get("user_id")
-    amount = float(data.get("amount"))
-    desc = data.get("description", "Purchase")
-    referrer_id = data.get("referrer_id")
-
-    user = supabase.table('users').select('balance').eq('id', user_id).single().execute()
-    if user.data.get('balance', 0) < amount:
-        return jsonify({"status": "error", "detail": "Insufficient balance"}), 400
-
-    update_balance(user_id, -amount)
-    ref = f"BAL-{uuid.uuid4().hex[:8]}"
-    record_transaction(user_id, "purchase", amount, "completed", desc, ref, "balance")
-    if referrer_id:
-        credit_referrer(referrer_id, amount)
-    return jsonify({"status": "success", "message": "Payment successful from balance"})
-
-# ── Wallet Deposit (via Paystack) ──
+# ── Wallet: Deposit (via Paystack) ──
 @app.route("/api/wallet/deposit", methods=["POST"])
 def wallet_deposit():
     data = request.json
@@ -219,20 +260,74 @@ def wallet_transactions():
     txns = supabase.table('member_transactions').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(20).execute()
     return jsonify(txns.data)
 
+# ── Internal Balance Payment (for purchases using wallet) ──
+@app.route("/api/wallet/pay", methods=["POST"])
+def wallet_pay():
+    data = request.json
+    user_id = data.get("user_id")
+    amount = float(data.get("amount"))
+    desc = data.get("description", "Purchase")
+    seller_id = data.get("seller_id")
+
+    user = supabase.table('users').select('balance').eq('id', user_id).single().execute()
+    if user.data.get('balance', 0) < amount:
+        return jsonify({"status": "error", "detail": "Insufficient balance"}), 400
+
+    update_balance(user_id, -amount)
+    ref = f"BAL-{uuid.uuid4().hex[:8]}"
+    record_transaction(user_id, "purchase", amount, "completed", desc, ref, "balance")
+
+    if seller_id:
+        process_direct_sale(seller_id, amount, desc)
+
+    return jsonify({"status": "success", "message": "Payment successful from balance"})
+
+# ── Sales share creation ──
+@app.route("/api/sales/share", methods=["POST"])
+def sales_share():
+    data = request.json
+    user_id = data.get("user_id")
+    product_id = data.get("product_id")
+    tracking_id = f"SH-{uuid.uuid4().hex[:8]}"
+    supabase.table('sales_shares').insert({
+        "user_id": user_id, "product_id": product_id,
+        "product_type": data.get("product_type", "product"),
+        "tracking_id": tracking_id
+    }).execute()
+    return jsonify({"status": "success", "link": f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"})
+
+@app.route("/api/sales/track/<tracking_id>", methods=["GET"])
+def sales_track(tracking_id):
+    supabase.rpc('increment_share_views', {'p_tracking_id': tracking_id}).execute()
+    share = supabase.table('sales_shares').select('*, products(*)').eq('tracking_id', tracking_id).single().execute()
+    if share.data: return jsonify(share.data)
+    return jsonify({"error": "Not found"}), 404
+
+@app.route("/api/sales/inquiry", methods=["POST"])
+def sales_inquiry():
+    data = request.json
+    tracking_id = data.get("tracking_id")
+    supabase.rpc('increment_share_inquiries', {'p_tracking_id': tracking_id}).execute()
+    return jsonify({"status": "ok"})
+
+@app.route("/api/sales/stats/<user_id>", methods=["GET"])
+def sales_stats(user_id):
+    shares = supabase.table('sales_shares').select('*').eq('user_id', user_id).execute()
+    total_shares = len(shares.data)
+    total_views = sum(s.get('views', 0) for s in shares.data)
+    total_inquiries = sum(s.get('inquiries', 0) for s in shares.data)
+    earnings = supabase.table('member_earnings').select('amount').eq('user_id', user_id).eq('source', 'direct_sale').execute()
+    total_earnings = sum(e.get('amount', 0) for e in earnings.data)
+    return jsonify({"shares": total_shares, "views": total_views, "inquiries": total_inquiries, "earnings": total_earnings})
+
 # ── AI Support Chat ──
 @app.route("/api/support/chat", methods=["POST"])
 def support_chat():
     data = request.json
     msg = data.get("message", "").lower().strip()
-    k = {
-        "hello":"Hello! 👋 Ask me about Jvex: signup, wallet, marketplace, freelancing, tiers, referrals.",
-        "deposit":"Use Dashboard → Overview → Card/M‑Pesa Deposit via Paystack.",
-        "withdraw":"Dashboard → Overview → Withdraw. Admin approves quickly.",
-        "balance":"Your balance is on Dashboard Overview.",
-        "tier":"4 tiers: Basic(Free), Regular(500/mo), Professional(1500/mo), Tycoon(3000/mo). Upgrade in Profile.",
-        "freelanc":"Freelancing under Financial Markets. Buy tokens to bid.",
-        "referral":"Share your link from Dashboard → Teams to earn commissions."
-    }
+    k = {"hello":"Hello! 👋 Ask me about Jvex: signup, wallet, marketplace, freelancing, tiers, referrals.",
+         "deposit":"Use Dashboard → Overview → Card/M‑Pesa Deposit via Paystack.",
+         "withdraw":"Dashboard → Overview → Withdraw. Admin approves quickly."}
     reply = None
     for kw, resp in k.items():
         if kw in msg:
@@ -246,54 +341,3 @@ def support_chat():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
-
-# ── Sales Share Tracking ──
-@app.route("/api/sales/share", methods=["POST"])
-def sales_share():
-    data = request.json
-    user_id = data.get("user_id")
-    product_id = data.get("product_id")
-    product_type = data.get("product_type", "product")
-    tracking_id = f"SH-{uuid.uuid4().hex[:8]}"
-    supabase.table('sales_shares').insert({
-        "user_id": user_id,
-        "product_id": product_id,
-        "product_type": product_type,
-        "tracking_id": tracking_id
-    }).execute()
-    # Return the shareable link
-    link = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
-    return jsonify({"status": "success", "link": link})
-
-@app.route("/api/sales/track/<tracking_id>", methods=["GET"])
-def sales_track(tracking_id):
-    # Increment views
-    supabase.rpc('increment_share_views', {'p_tracking_id': tracking_id}).execute()
-    # Fetch the share data
-    share = supabase.table('sales_shares').select('*, products(*)').eq('tracking_id', tracking_id).single().execute()
-    if share.data:
-        return jsonify(share.data)
-    return jsonify({"error": "Not found"}), 404
-
-@app.route("/api/sales/inquiry", methods=["POST"])
-def sales_inquiry():
-    data = request.json
-    tracking_id = data.get("tracking_id")
-    supabase.rpc('increment_share_inquiries', {'p_tracking_id': tracking_id}).execute()
-    return jsonify({"status": "ok"})
-
-@app.route("/api/sales/stats/<user_id>", methods=["GET"])
-def sales_stats(user_id):
-    # Get total shares, views, inquiries, earnings
-    shares = supabase.table('sales_shares').select('*').eq('user_id', user_id).execute()
-    total_shares = len(shares.data)
-    total_views = sum(s.get('views', 0) for s in shares.data)
-    total_inquiries = sum(s.get('inquiries', 0) for s in shares.data)
-    earnings = supabase.table('member_earnings').select('amount').eq('user_id', user_id).eq('source', 'sales_commission').execute()
-    total_earnings = sum(e.get('amount', 0) for e in earnings.data)
-    return jsonify({
-        "shares": total_shares,
-        "views": total_views,
-        "inquiries": total_inquiries,
-        "earnings": total_earnings
-    })
