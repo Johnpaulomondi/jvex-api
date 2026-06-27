@@ -341,3 +341,99 @@ def support_chat():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+def send_order_email(to_email: str, subject: str, body: str):
+    sender = os.getenv("SMTP_EMAIL", "omoshdeleon47@gmail.com")
+    password = os.getenv("SMTP_PASSWORD", "")
+    if not password:
+        print("SMTP password not set – email not sent")
+        return
+    msg = MIMEMultipart()
+    msg['From'] = sender
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'html'))
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender, password)
+            server.sendmail(sender, to_email, msg.as_string())
+    except Exception as e:
+        print(f"Email failed: {e}")
+
+@app.route("/api/send-receipt", methods=["POST"])
+def send_receipt():
+    data = request.json
+    email = data.get("email")
+    tracking_id = data.get("tracking_id")
+    items = data.get("items", [])
+    total = data.get("total", 0)
+    delivery = data.get("delivery", {})
+
+    items_html = "".join(f"<li>{i['name']} x{i.get('quantity',1)} – KSh {i['price']:,}</li>" for i in items)
+    body = f"""
+    <h2>Thank you for your order!</h2>
+    <p>Your payment has been confirmed.</p>
+    <h3>Order Summary</h3>
+    <ul>{items_html}</ul>
+    <p><strong>Total:</strong> KSh {total:,}</p>
+    <p><strong>Delivery:</strong> {delivery.get('region','')}, {delivery.get('county','')}, {delivery.get('nearestTown','')}</p>
+    <p><strong>Tracking ID:</strong> {tracking_id}</p>
+    <p><a href='https://jvex-labs-backup.vercel.app/track'>Track your order</a></p>
+    """
+    send_order_email(email, "Jvex Labs – Order Confirmation", body)
+    return jsonify({"status": "ok"})
+
+# ── Open Graph Share Page (for WhatsApp/Facebook preview) ──
+@app.route("/api/og-share/<tracking_id>", methods=["GET"])
+def og_share(tracking_id):
+    # Fetch share data
+    share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
+    if not share.data:
+        return "<html><body><h2>Link not found</h2></body></html>", 404
+
+    share_data = share.data
+    product_name = "Product"
+    product_image = ""
+    product_price = ""
+    product_desc = "Get this at the best discount on Jvex Labs!"
+
+    if share_data.get('product_type') == 'product':
+        prod = supabase.table('products').select('name,price,image_url,description').eq('id', share_data['product_id']).single().execute()
+        if prod.data:
+            product_name = prod.data.get('name', 'Product')
+            product_image = prod.data.get('image_url', '')
+            product_price = str(prod.data.get('price', ''))
+            product_desc = prod.data.get('description', product_desc)
+    elif share_data.get('product_type') == 'service':
+        svc = supabase.table('services').select('service_name,price,image_url,description').eq('id', share_data['product_id']).single().execute()
+        if svc.data:
+            product_name = svc.data.get('service_name', 'Service')
+            product_image = svc.data.get('image_url', '')
+            product_price = str(svc.data.get('price', ''))
+            product_desc = svc.data.get('description', product_desc)
+
+    # Construct the full landing page URL
+    land_url = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta property="og:title" content="{product_name} — KSh {product_price}" />
+  <meta property="og:description" content="{product_desc}" />
+  <meta property="og:image" content="{product_image}" />
+  <meta property="og:url" content="{land_url}" />
+  <meta property="og:type" content="product" />
+  <meta property="og:site_name" content="Jvex Labs" />
+  <meta http-equiv="refresh" content="0;url={land_url}" />
+  <title>{product_name}</title>
+</head>
+<body>
+  <p>Redirecting to <a href="{land_url}">Jvex Labs</a>…</p>
+</body>
+</html>"""
+    return html
