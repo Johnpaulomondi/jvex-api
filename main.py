@@ -50,7 +50,7 @@ def process_direct_sale(seller_id: str, gross_amount: float, product_ref: str):
     supabase.table('member_earnings').insert({
         'user_id': seller_id,
         'amount': commission,
-        'source': 'direct_sale',
+        'source_id': 'direct_sale',
         'created_at': 'now()'
     }).execute()
     # Record the sale transaction with net JVEX amount
@@ -70,7 +70,7 @@ def process_referral_payout(referred_user_id: str, tier_purchased_id: str):
     if referrer_id == referred_user_id:
         return
     # Check for duplicate payouts (already paid for this tier?)
-    existing = supabase.table('member_earnings').select('id').eq('user_id', referrer_id).eq('source', 'referral').eq('reference_id', referred_user_id).eq('tier_id', tier_purchased_id).execute()
+    existing = supabase.table('member_earnings').select('id').eq('user_id', referrer_id).eq('source_id', 'referral').eq('reference_id', referred_user_id).eq('tier_id', tier_purchased_id).execute()
     if existing.data and len(existing.data) > 0:
         return  # already paid
     # Get the purchased tier's referral_l1_rate (or appropriate level)
@@ -86,7 +86,7 @@ def process_referral_payout(referred_user_id: str, tier_purchased_id: str):
     supabase.table('member_earnings').insert({
         'user_id': referrer_id,
         'amount': commission,
-        'source': 'referral',
+        'source_id': 'referral',
         'reference_id': referred_user_id,
         'tier_id': tier_purchased_id,
         'created_at': 'now()'
@@ -316,7 +316,7 @@ def sales_stats(user_id):
     total_shares = len(shares.data)
     total_views = sum(s.get('views', 0) for s in shares.data)
     total_inquiries = sum(s.get('inquiries', 0) for s in shares.data)
-    earnings = supabase.table('member_earnings').select('amount').eq('user_id', user_id).eq('source', 'direct_sale').execute()
+    earnings = supabase.table('member_earnings').select('amount').eq('user_id', user_id).eq('source_id', 'direct_sale').execute()
     total_earnings = sum(e.get('amount', 0) for e in earnings.data)
     return jsonify({"shares": total_shares, "views": total_views, "inquiries": total_inquiries, "earnings": total_earnings})
 
