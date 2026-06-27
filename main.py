@@ -241,3 +241,50 @@ def support_chat():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
+# ── OG Tag Service for Social Sharing ──
+@app.route("/og/s/<tracking_id>", methods=["GET"])
+def og_share(tracking_id):
+    fallback = f"""<!doctype html><html lang="en"><head>
+    <meta property="og:title" content="Jvex Labs – Shared Product" />
+    <meta property="og:description" content="Discover products and services on Jvex Labs." />
+    <meta property="og:image" content="https://jvex-labs-backup.vercel.app/logo.png" />
+    <meta property="og:url" content="https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
+    <meta http-equiv="refresh" content="0;url=https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
+    </head><body><p>Redirecting…</p></body></html>"""
+
+    try:
+        # Try to fetch share data from Supabase
+        share = supabase.table('sales_shares').select('*').eq('tracking_id', tracking_id).single().execute()
+        if not share.data:
+            return fallback
+
+        item = None
+        if share.data['product_type'] == 'product':
+            product = supabase.table('products').select('*').eq('id', share.data['product_id']).single().execute()
+            item = product.data
+        elif share.data['product_type'] == 'service':
+            service = supabase.table('services').select('*').eq('id', share.data['product_id']).single().execute()
+            item = service.data
+
+        name = (item.get('name') or item.get('service_name') or 'Jvex Product') if item else 'Jvex Product'
+        desc = (item.get('description', '')[:200] or 'Check out this product on Jvex Labs.') if item else 'Discover Jvex Labs.'
+        image = item.get('image_url') if item else None
+        if not image:
+            # Try query params as fallback
+            image = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
+            name = request.args.get('name', name)
+            desc = request.args.get('desc', desc)
+
+        html = f"""<!doctype html><html lang="en"><head>
+        <meta charset="UTF-8" />
+        <meta property="og:title" content="{name}" />
+        <meta property="og:description" content="{desc}" />
+        <meta property="og:image" content="{image}" />
+        <meta property="og:url" content="https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
+        <meta property="og:type" content="product" />
+        <meta http-equiv="refresh" content="0;url=https://jvex-labs-backup.vercel.app/s/{tracking_id}" />
+        </head><body><p>Redirecting…</p></body></html>"""
+        return html
+    except:
+        return fallback
