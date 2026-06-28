@@ -186,154 +186,25 @@ def wallet_transactions():
     txns = supabase.table('member_transactions').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(20).execute()
     return jsonify(txns.data)
 
-# ── JVEX AI Assistant (secure: only returns data for the authenticated user) ──
+# ═══════════════════════════════════════════
+#  JVEX AI – SINGLE ROUTE, THREE BRANCHES
+# ═══════════════════════════════════════════
 @app.route("/api/support/chat", methods=["POST"])
 def support_chat():
-    data = request.json
-    message = data.get("message", "").lower().strip()
-    user_id = data.get("user_id", "")
-    user_name = data.get("user_name", "Member")
-
-    # Helper to fetch member info securely
-    def get_member_info(uid):
-        if not uid: return None
-        try:
-            user = supabase.table('users').select('*').eq('id', uid).single().execute()
-            if user.data:
-                tier = supabase.table('member_tiers').select('name').eq('id', user.data.get('tier_id')).single().execute()
-                return {**user.data, 'tier_name': tier.data.get('name') if tier.data else 'Basic'}
-        except: pass
-        return None
-
-    member = get_member_info(user_id) if user_id else None
-
-    reply = None
-
-    # Greetings
-    if any(w in message for w in ['hello','hi','hey','howdy','good morning','good evening']):
-        reply = f"Hello {user_name}! 👋 I'm the JVEX AI assistant. Ask me about your account, wallet, marketplace, freelancing, tiers, referrals, or anything about JVEX!"
-
-    # Member‑specific queries (only if user_id provided)
-    elif 'my balance' in message or 'how much do i have' in message:
-        if member:
-            reply = f"Your current balance is **KSh {member.get('balance', 0):,}**."
-        else:
-            reply = "I couldn't find your account. Please make sure you're logged in."
-
-    elif 'my tier' in message or 'subscription' in message:
-        if member:
-            reply = f"Your current tier is **{member.get('tier_name', 'Basic')}**."
-        else:
-            reply = "You can check your tier on your Profile page."
-
-    elif 'my referral' in message or 'referral link' in message:
-        if member and member.get('referral_code'):
-            reply = f"Your referral code is **{member['referral_code']}**. Share this link: https://jvex-labs-backup.vercel.app/signup?ref={member['referral_code']}"
-        else:
-            reply = "Your referral link is in Dashboard → Teams."
-
-    elif 'my orders' in message or 'my purchases' in message:
-        if member:
-            try:
-                orders = supabase.table('orders').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(5).execute()
-                if orders.data:
-                    reply = "Your recent orders:\n" + "\n".join(f"• {o.get('description') or o.get('items', [{}])[0].get('name', 'Order')} – KSh {o.get('amount', 0):,}" for o in orders.data)
-                else:
-                    reply = "You have no orders yet."
-            except: reply = "I couldn't fetch your orders right now."
-        else:
-            reply = "Please log in to see your orders."
-
-    # Navigation & general help
-    elif 'how do i deposit' in message or 'deposit' in message:
-        reply = "To deposit, go to **Dashboard → Deposit**. Choose an amount and you'll be redirected to Paystack. Funds appear instantly."
-    elif 'how do i withdraw' in message or 'withdraw' in message:
-        reply = "To withdraw, go to **Dashboard → Withdraw**. Enter your M‑Pesa number and amount. Admin processes quickly."
-    elif 'freelancing' in message or 'how to freelance' in message:
-        reply = "Freelancing is under **Financial Markets → Freelancing**. You need Regular tier or above. Buy tokens first."
-    elif 'tier' in message or 'upgrade' in message:
-        reply = "You can upgrade your tier on the **Profile** page. Tiers: Basic (Free), Regular (KSh 500/mo), Professional (KSh 1,500/mo), Tycoon (KSh 3,000/mo)."
-    elif 'track' in message or 'where is my order' in message:
-        reply = "Use the **Track Project** page with your email and tracking ID."
-
-    # General company knowledge
-    elif 'what is jvex' in message or 'about jvex' in message:
-        reply = "JVEX Labs is a registered technology company in Nairobi, Kenya, offering a digital marketplace, financial markets, freelancing, courses, and referrals."
-    elif 'paystack' in message:
-        reply = "We use Paystack for all card and M‑Pesa payments. It's fast, secure, and widely used in Africa."
-    elif 'paypal' in message:
-        reply = "We also support PayPal for international payments. You can select PayPal at checkout."
-    elif 'refund' in message:
-        reply = "Refund policies are in our Terms of Service. Generally, refunds are processed within 5‑10 business days."
-
-    # Admin commands (only for Tycoon/Professional – already checked by frontend, but enforced here for safety)
-    elif message.startswith('/admin') and member and member.get('tier_name') in ['Tycoon', 'Professional']:
-        if 'stats' in message:
-            total_users = supabase.table('users').select('*', count='exact').execute()
-            total_orders = supabase.table('orders').select('*', count='exact').execute()
-            reply = f"📊 System Stats:\n• Total Users: {total_users.count}\n• Total Orders: {total_orders.count}"
-        elif 'fraud' in message:
-            suspicious = supabase.table('member_earnings').select('*').gt('amount', 10000).limit(5).execute()
-            reply = "Suspicious large earnings:\n" + "\n".join(f"• {e.get('user_id')}: KSh {e.get('amount', 0):,}" for e in suspicious.data) if suspicious.data else "No suspicious activity detected."
-        else:
-            reply = "Admin commands: /admin stats, /admin fraud, /admin health"
-
-    # Fallback – escalate
-    else:
-        reply = f"I'm not sure about that. Let me connect you to our team.\n• WhatsApp: {os.getenv('WHATSAPP_NUMBER', '+254783282247')}\n• Email: {os.getenv('SUPPORT_EMAIL', 'omoshdeleon47@gmail.com')}"
-
-    # Save chat history (optional)
-    try:
-        supabase.table('support_chat_sessions').insert({
-            "user_id": user_id or "guest",
-            "message": message,
-            "reply": reply,
-            "created_at": "now()"
-        }).execute()
-    except: pass
-
-    return jsonify({"reply": reply})
-
-@app.route("/api/support/chat", methods=["POST"])
-
-def support_chat():
-
-    from ai_engine import get_ai_response
-
-    data = request.json
-
-    reply = get_ai_response(data, supabase, os)
-
-    return jsonify({"reply": reply})
-
-@app.route("/api/support/chat", methods=["POST"])
-
-def support_chat():
-
     from ai_engine import PublicAI, MemberAI, AdminAI
-
     data = request.json
-
     user_id = data.get("user_id", "")
-
     user_name = data.get("user_name", "Member")
-
     role = data.get("role", "public")
 
     if role == "member":
-
         ai = MemberAI(supabase)
-
     elif role == "admin":
-
         ai = AdminAI(supabase)
-
     else:
-
         ai = PublicAI(supabase)
 
     reply = ai.respond(data.get("message", ""), user_id, user_name)
-
     return jsonify({"reply": reply})
 
 if __name__ == "__main__":
