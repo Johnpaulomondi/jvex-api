@@ -294,5 +294,17 @@ def support_chat():
 
     return jsonify({"reply": reply})
 
+@app.route("/api/support/chat", methods=["POST"])
+
+def support_chat():
+
+    from ai_engine import get_ai_response
+
+    data = request.json
+
+    reply = get_ai_response(data, supabase, os)
+
+    return jsonify({"reply": reply})
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
