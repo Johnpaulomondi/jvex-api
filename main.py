@@ -195,3 +195,33 @@ def wallet_transactions():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
+# ── Public share route (no /og prefix) ──
+@app.route("/s/<product_id>", methods=["GET"])
+def share_product(product_id):
+    ref = request.args.get('ref', '')
+    product = supabase.table('products').select('*').eq('id', product_id).single().execute()
+    service = supabase.table('services').select('*').eq('id', product_id).single().execute()
+    item = product.data or service.data
+    name = (item.get('name') or item.get('service_name') or 'Jvex Product') if item else 'Jvex Labs'
+    desc = (item.get('description', '')[:200] or 'Discover products and services on Jvex Labs.') if item else ''
+    img = item.get('image_url') if item else 'https://jvex-labs-backup.vercel.app/logo.png'
+
+    user_agent = request.headers.get('User-Agent', '')
+    is_crawler = any(bot in user_agent for bot in [
+        'WhatsApp','facebookexternalhit','Twitterbot','LinkedInBot',
+        'Discordbot','TelegramBot','Slackbot','Pinterest','googlebot'
+    ])
+
+    if is_crawler:
+        html = f"""<!doctype html><html lang="en"><head>
+        <meta charset="UTF-8" />
+        <meta property="og:title" content="{name}" />
+        <meta property="og:description" content="{desc}" />
+        <meta property="og:image" content="{img}" />
+        <meta property="og:url" content="https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}" />
+        <meta property="og:type" content="product" />
+        </head><body></body></html>"""
+        return html
+    else:
+        return redirect(f"https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}")
