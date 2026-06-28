@@ -218,3 +218,29 @@ def support_chat():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
+
+# ── Search suggestions (fuzzy, tolerant) ──
+@app.route("/api/search/suggest", methods=["GET"])
+def search_suggest():
+    q = request.args.get('q', '').lower().strip()
+    if not q:
+        return jsonify({"suggestions": []})
+
+    # Quick common keywords dictionary
+    common = ['phone','laptop','gaming','design','marketing','consult','ai','data','computer','gadget','software','web','seo','video','finance']
+    suggestions = [word for word in common if word.startswith(q) or q in word]
+
+    # Also search database titles for similar
+    try:
+        products = supabase.table('products').select('name').ilike('name', f'%{q}%').limit(3).execute()
+        services = supabase.table('services').select('service_name').ilike('service_name', f'%{q}%').limit(3).execute()
+        for row in products.data or []:
+            suggestions.append(row['name'].lower())
+        for row in services.data or []:
+            suggestions.append(row['service_name'].lower())
+    except:
+        pass
+
+    # Deduplicate and limit
+    suggestions = list(dict.fromkeys(suggestions))[:5]
+    return jsonify({"suggestions": suggestions})
