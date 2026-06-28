@@ -30,7 +30,16 @@ def home():
 
 @app.route("/api/health")
 def health():
-    return jsonify({"api": "online"})
+    h = {"api": "online", "supabase": False, "paystack": False}
+    try:
+        supabase.table('users').select('id').limit(1).execute()
+        h["supabase"] = True
+    except: pass
+    try:
+        requests.get("https://api.paystack.co/transaction/verify/000000", headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"})
+        h["paystack"] = True
+    except: pass
+    return jsonify(h)
 
 @app.route("/api/contact", methods=["GET"])
 def contact_info():
