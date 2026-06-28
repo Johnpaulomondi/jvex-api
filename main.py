@@ -39,11 +39,10 @@ def contact_info():
         "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")
     })
 
-# ── OG / Share handler (crawler vs human) ──
-@app.route("/og/s/<product_id>", methods=["GET"])
-def og_share(product_id):
+# ── Public share route (for all visitors) ──
+@app.route("/s/<product_id>", methods=["GET"])
+def share_product(product_id):
     ref = request.args.get('ref', '')
-    # Fetch product from DB
     product = supabase.table('products').select('*').eq('id', product_id).single().execute()
     service = supabase.table('services').select('*').eq('id', product_id).single().execute()
     item = product.data or service.data
@@ -58,7 +57,6 @@ def og_share(product_id):
     ])
 
     if is_crawler:
-        # Return only OG tags (no redirect)
         html = f"""<!doctype html><html lang="en"><head>
         <meta charset="UTF-8" />
         <meta property="og:title" content="{name}" />
@@ -69,19 +67,19 @@ def og_share(product_id):
         </head><body></body></html>"""
         return html
     else:
-        # Human → redirect to React product page
         return redirect(f"https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}")
 
-# ── Keep all your wallet, paystack, etc. unchanged ──
-# (I’ll append them now to keep this file complete)
+# ── OG endpoint (backup) ──
+@app.route("/og/s/<product_id>", methods=["GET"])
+def og_share(product_id):
+    return share_product(product_id)
 
-# ── Sales Share (creates tracked link) ──
+# ── Sales Share ──
 @app.route("/api/sales/share", methods=["POST"])
 def sales_share():
     data = request.json
     user_id = data.get("user_id")
     product_id = data.get("product_id")
-    # Get user's referral code
     user = supabase.table('users').select('referral_code').eq('id', user_id).single().execute()
     ref_code = user.data.get('referral_code') if user.data else ''
     supabase.table('sales_shares').insert({
@@ -90,7 +88,7 @@ def sales_share():
         "product_type": data.get("product_type", "product"),
         "tracking_id": f"SH-{uuid.uuid4().hex[:8]}"
     }).execute()
-    link = f"https://jvex-labs-backup.vercel.app/s/{product_id}?ref={ref_code}"
+    link = f"https://jvex-api.onrender.com/s/{product_id}?ref={ref_code}"
     return jsonify({"status": "success", "link": link})
 
 @app.route("/api/sales/stats/<user_id>", methods=["GET"])
@@ -103,6 +101,7 @@ def sales_stats(user_id):
     total_earnings = sum(e.get('amount', 0) for e in earnings.data)
     return jsonify({"shares": total_shares, "views": total_views, "inquiries": total_inquiries, "earnings": total_earnings})
 
+# ── Paystack & Wallet (unchanged) ──
 @app.route("/api/paystack/initialize", methods=["POST"])
 def paystack_initialize():
     data = request.json
@@ -195,33 +194,3 @@ def wallet_transactions():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
-
-# ── Public share route (no /og prefix) ──
-@app.route("/s/<product_id>", methods=["GET"])
-def share_product(product_id):
-    ref = request.args.get('ref', '')
-    product = supabase.table('products').select('*').eq('id', product_id).single().execute()
-    service = supabase.table('services').select('*').eq('id', product_id).single().execute()
-    item = product.data or service.data
-    name = (item.get('name') or item.get('service_name') or 'Jvex Product') if item else 'Jvex Labs'
-    desc = (item.get('description', '')[:200] or 'Discover products and services on Jvex Labs.') if item else ''
-    img = item.get('image_url') if item else 'https://jvex-labs-backup.vercel.app/logo.png'
-
-    user_agent = request.headers.get('User-Agent', '')
-    is_crawler = any(bot in user_agent for bot in [
-        'WhatsApp','facebookexternalhit','Twitterbot','LinkedInBot',
-        'Discordbot','TelegramBot','Slackbot','Pinterest','googlebot'
-    ])
-
-    if is_crawler:
-        html = f"""<!doctype html><html lang="en"><head>
-        <meta charset="UTF-8" />
-        <meta property="og:title" content="{name}" />
-        <meta property="og:description" content="{desc}" />
-        <meta property="og:image" content="{img}" />
-        <meta property="og:url" content="https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}" />
-        <meta property="og:type" content="product" />
-        </head><body></body></html>"""
-        return html
-    else:
-        return redirect(f"https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}")
