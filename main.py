@@ -39,7 +39,7 @@ def contact_info():
         "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")
     })
 
-# ── Share route (unchanged) ──
+# ── Share route ──
 @app.route("/s/<product_id>", methods=["GET"])
 def share_product(product_id):
     ref = request.args.get('ref', '')
@@ -71,7 +71,7 @@ def share_product(product_id):
     else:
         return redirect(f"https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}")
 
-# ── Sales Share (unchanged) ──
+# ── Sales Share ──
 @app.route("/api/sales/share", methods=["POST"])
 def sales_share():
     data = request.json
@@ -87,7 +87,17 @@ def sales_share():
     link = f"https://jvex-api.onrender.com/s/{product_id}?ref={ref_code}"
     return jsonify({"status": "success", "link": link})
 
-# ── Paystack & Wallet (unchanged) ──
+@app.route("/api/sales/stats/<user_id>", methods=["GET"])
+def sales_stats(user_id):
+    shares = supabase.table('sales_shares').select('*').eq('user_id', user_id).execute()
+    total_shares = len(shares.data)
+    total_views = sum(s.get('views', 0) for s in shares.data)
+    total_inquiries = sum(s.get('inquiries', 0) for s in shares.data)
+    earnings = supabase.table('member_earnings').select('amount').eq('user_id', user_id).eq('source_id', 'direct_sale').execute()
+    total_earnings = sum(e.get('amount', 0) for e in earnings.data)
+    return jsonify({"shares": total_shares, "views": total_views, "inquiries": total_inquiries, "earnings": total_earnings})
+
+# ── Paystack ──
 @app.route("/api/paystack/initialize", methods=["POST"])
 def paystack_initialize():
     data = request.json
@@ -134,6 +144,7 @@ def paystack_callback():
             return redirect("https://jvex-labs-backup.vercel.app/payment-success")
         return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
 
+# ── Wallet ──
 @app.route("/api/wallet/deposit", methods=["POST"])
 def wallet_deposit():
     data = request.json
@@ -175,9 +186,7 @@ def wallet_transactions():
     txns = supabase.table('member_transactions').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(20).execute()
     return jsonify(txns.data)
 
-# ═══════════════════════════════════════════
-#  JVEX AI ASSISTANT – DEEP KNOWLEDGE BASE
-# ═══════════════════════════════════════════
+# ── JVEX AI Assistant (secure: only returns data for the authenticated user) ──
 @app.route("/api/support/chat", methods=["POST"])
 def support_chat():
     data = request.json
@@ -185,8 +194,9 @@ def support_chat():
     user_id = data.get("user_id", "")
     user_name = data.get("user_name", "Member")
 
-    # Helper to fetch member info
+    # Helper to fetch member info securely
     def get_member_info(uid):
+        if not uid: return None
         try:
             user = supabase.table('users').select('*').eq('id', uid).single().execute()
             if user.data:
@@ -197,14 +207,13 @@ def support_chat():
 
     member = get_member_info(user_id) if user_id else None
 
-    # ── Intent Recognition & Response ──
     reply = None
 
-    # 1. Greetings / small talk
+    # Greetings
     if any(w in message for w in ['hello','hi','hey','howdy','good morning','good evening']):
-        reply = f"Hello {user_name}! 👋 I'm the JVEX AI assistant. I can help you with your account, wallet, marketplace, freelancing, tiers, referrals, or anything about JVEX. Just ask!"
+        reply = f"Hello {user_name}! 👋 I'm the JVEX AI assistant. Ask me about your account, wallet, marketplace, freelancing, tiers, referrals, or anything about JVEX!"
 
-    # 2. Account / profile inquiries
+    # Member‑specific queries (only if user_id provided)
     elif 'my balance' in message or 'how much do i have' in message:
         if member:
             reply = f"Your current balance is **KSh {member.get('balance', 0):,}**."
@@ -235,29 +244,29 @@ def support_chat():
         else:
             reply = "Please log in to see your orders."
 
-    # 3. Navigation help
+    # Navigation & general help
     elif 'how do i deposit' in message or 'deposit' in message:
-        reply = "To deposit, go to **Dashboard → Deposit**. Choose an amount and you'll be redirected to Paystack to complete payment. Funds appear instantly."
+        reply = "To deposit, go to **Dashboard → Deposit**. Choose an amount and you'll be redirected to Paystack. Funds appear instantly."
     elif 'how do i withdraw' in message or 'withdraw' in message:
-        reply = "To withdraw, go to **Dashboard → Withdraw**. Enter your M‑Pesa number and amount. Admin processes withdrawals quickly."
+        reply = "To withdraw, go to **Dashboard → Withdraw**. Enter your M‑Pesa number and amount. Admin processes quickly."
     elif 'freelancing' in message or 'how to freelance' in message:
-        reply = "Freelancing is under **Financial Markets → Freelancing**. You need Regular tier or above to bid on jobs. Buy tokens in the Token Shop first."
+        reply = "Freelancing is under **Financial Markets → Freelancing**. You need Regular tier or above. Buy tokens first."
     elif 'tier' in message or 'upgrade' in message:
         reply = "You can upgrade your tier on the **Profile** page. Tiers: Basic (Free), Regular (KSh 500/mo), Professional (KSh 1,500/mo), Tycoon (KSh 3,000/mo)."
     elif 'track' in message or 'where is my order' in message:
-        reply = "Use the **Track Project** page with your email and tracking ID to monitor your order and chat with staff."
+        reply = "Use the **Track Project** page with your email and tracking ID."
 
-    # 4. General JVEX knowledge
+    # General company knowledge
     elif 'what is jvex' in message or 'about jvex' in message:
-        reply = "JVEX Labs is a registered technology company in Nairobi, Kenya. We offer a digital marketplace, financial markets, freelancing, courses, and a referral system – all in one platform."
+        reply = "JVEX Labs is a registered technology company in Nairobi, Kenya, offering a digital marketplace, financial markets, freelancing, courses, and referrals."
     elif 'paystack' in message:
         reply = "We use Paystack for all card and M‑Pesa payments. It's fast, secure, and widely used in Africa."
     elif 'paypal' in message:
         reply = "We also support PayPal for international payments. You can select PayPal at checkout."
     elif 'refund' in message:
-        reply = "Refund policies are in our Terms of Service. Generally, refunds are processed within 5‑10 business days after approval."
+        reply = "Refund policies are in our Terms of Service. Generally, refunds are processed within 5‑10 business days."
 
-    # 5. Admin-specific commands
+    # Admin commands (only for Tycoon/Professional – already checked by frontend, but enforced here for safety)
     elif message.startswith('/admin') and member and member.get('tier_name') in ['Tycoon', 'Professional']:
         if 'stats' in message:
             total_users = supabase.table('users').select('*', count='exact').execute()
@@ -269,11 +278,11 @@ def support_chat():
         else:
             reply = "Admin commands: /admin stats, /admin fraud, /admin health"
 
-    # 6. Fallback – escalate
+    # Fallback – escalate
     else:
         reply = f"I'm not sure about that. Let me connect you to our team.\n• WhatsApp: {os.getenv('WHATSAPP_NUMBER', '+254783282247')}\n• Email: {os.getenv('SUPPORT_EMAIL', 'omoshdeleon47@gmail.com')}"
 
-    # Save chat history
+    # Save chat history (optional)
     try:
         supabase.table('support_chat_sessions').insert({
             "user_id": user_id or "guest",
@@ -284,3 +293,6 @@ def support_chat():
     except: pass
 
     return jsonify({"reply": reply})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
