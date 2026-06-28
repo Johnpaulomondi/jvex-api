@@ -40,12 +40,16 @@ def contact_info():
     })
 
 # ── OG Tag endpoint (for social crawlers) ──
-@app.route("/og/s/<tracking_id>", methods=["GET"])
-def og_share(tracking_id):
-    name = request.args.get('name', 'Jvex Labs – Shared Product')
-    desc = request.args.get('desc', 'Discover products and services on Jvex Labs.')
-    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
-    share_url = f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"
+@app.route("/og/s/<product_id>", methods=["GET"])
+def og_share(product_id):
+    # Fetch product details from DB
+    product = supabase.table('products').select('*').eq('id', product_id).single().execute()
+    service = supabase.table('services').select('*').eq('id', product_id).single().execute()
+    item = product.data or service.data
+    name = (item.get('name') or item.get('service_name') or 'Jvex Product') if item else 'Jvex Labs'
+    desc = (item.get('description', '')[:200] or 'Discover products and services on Jvex Labs.') if item else ''
+    img = item.get('image_url') if item else 'https://jvex-labs-backup.vercel.app/logo.png'
+    share_url = f"https://jvex-labs-backup.vercel.app/s/{product_id}"
 
     html = f"""<!doctype html><html lang="en"><head>
     <meta charset="UTF-8" />
@@ -58,18 +62,24 @@ def og_share(tracking_id):
     </head><body><p>Redirecting…</p></body></html>"""
     return html
 
-# ── Sales Share ──
+# ── Sales Share (creates tracked link) ──
 @app.route("/api/sales/share", methods=["POST"])
 def sales_share():
     data = request.json
-    tracking_id = f"SH-{uuid.uuid4().hex[:8]}"
+    user_id = data.get("user_id")
+    product_id = data.get("product_id")
+    # Get user's referral code
+    user = supabase.table('users').select('referral_code').eq('id', user_id).single().execute()
+    ref_code = user.data.get('referral_code') if user.data else ''
+    # Log the share
     supabase.table('sales_shares').insert({
-        "user_id": data.get("user_id"),
-        "product_id": data.get("product_id"),
+        "user_id": user_id,
+        "product_id": product_id,
         "product_type": data.get("product_type", "product"),
-        "tracking_id": tracking_id
+        "tracking_id": f"SH-{uuid.uuid4().hex[:8]}"
     }).execute()
-    return jsonify({"status": "success", "link": f"https://jvex-labs-backup.vercel.app/s/{tracking_id}"})
+    link = f"https://jvex-labs-backup.vercel.app/s/{product_id}?ref={ref_code}"
+    return jsonify({"status": "success", "link": link})
 
 @app.route("/api/sales/stats/<user_id>", methods=["GET"])
 def sales_stats(user_id):
@@ -111,6 +121,18 @@ def paystack_callback():
             record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {d.get('reference')}", d.get('reference'), "paystack")
             if tx_type == "tier_upgrade" and meta.get("tier_id"):
                 supabase.table('users').update({"tier_id": meta["tier_id"], "tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
+            # Commission payout
+            seller_id = meta.get("seller_id")
+            if seller_id and tx_type == "purchase" and seller_id != user_id:
+                # Anti-fraud: check no duplicate purchase from same buyer for same seller within 24h
+                existing = supabase.table('member_earnings').select('id').eq('user_id', seller_id).eq('reference_id', d.get('reference')).execute()
+                if not existing.data:
+                    commission = round(amount * 0.10, 2)  # default 10%, adjust per tier later
+                    update_balance(seller_id, commission)
+                    supabase.table('member_earnings').insert({
+                        'user_id': seller_id, 'amount': commission, 'source_id': 'direct_sale',
+                        'reference_id': d.get('reference'), 'created_at': 'now()'
+                    }).execute()
         return jsonify({"status": "success"})
     else:
         reference = request.args.get("reference")
@@ -128,6 +150,16 @@ def paystack_callback():
             record_transaction(user_id or "guest", tx_type, amount, "completed", f"Paystack payment {reference}", reference, "paystack")
             if tx_type == "tier_upgrade" and meta.get("tier_id"):
                 supabase.table('users').update({"tier_id": meta["tier_id"], "tier_expiry": "now() + interval '30 days'"}).eq('id', user_id).execute()
+            seller_id = meta.get("seller_id")
+            if seller_id and tx_type == "purchase" and seller_id != user_id:
+                existing = supabase.table('member_earnings').select('id').eq('user_id', seller_id).eq('reference_id', reference).execute()
+                if not existing.data:
+                    commission = round(amount * 0.10, 2)
+                    update_balance(seller_id, commission)
+                    supabase.table('member_earnings').insert({
+                        'user_id': seller_id, 'amount': commission, 'source_id': 'direct_sale',
+                        'reference_id': reference, 'created_at': 'now()'
+                    }).execute()
             return redirect("https://jvex-labs-backup.vercel.app/payment-success")
         return redirect("https://jvex-labs-backup.vercel.app/payment-failed")
 
