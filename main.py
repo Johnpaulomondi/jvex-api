@@ -32,23 +32,26 @@ def home():
 def health():
     return jsonify({"api": "online"})
 
-@app.route("/api/contact", methods=["GET"])
-def contact_info():
-    return jsonify({
-        "whatsapp": os.getenv("WHATSAPP_NUMBER", "+254783282247"),
-        "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")
-    })
-
-# ── Public share route (for all visitors) ──
+# ── Share route (query params priority, DB fallback) ──
 @app.route("/s/<product_id>", methods=["GET"])
 def share_product(product_id):
     ref = request.args.get('ref', '')
-    product = supabase.table('products').select('*').eq('id', product_id).single().execute()
-    service = supabase.table('services').select('*').eq('id', product_id).single().execute()
-    item = product.data or service.data
-    name = (item.get('name') or item.get('service_name') or 'Jvex Product') if item else 'Jvex Labs'
-    desc = (item.get('description', '')[:200] or 'Discover products and services on Jvex Labs.') if item else ''
-    img = item.get('image_url') if item else 'https://jvex-labs-backup.vercel.app/logo.png'
+    name = request.args.get('name', 'Jvex Labs')
+    desc = request.args.get('desc', 'Discover products and services on Jvex Labs.')
+    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
+
+    # If no query params, try database
+    if not request.args.get('name') or not request.args.get('img'):
+        try:
+            product = supabase.table('products').select('*').eq('id', product_id).single().execute()
+            service = supabase.table('services').select('*').eq('id', product_id).single().execute()
+            item = product.data or service.data
+            if item:
+                name = item.get('name') or item.get('service_name') or name
+                desc = (item.get('description', '')[:200] or desc)
+                img = item.get('image_url') or img
+        except:
+            pass
 
     user_agent = request.headers.get('User-Agent', '')
     is_crawler = any(bot in user_agent for bot in [
