@@ -306,5 +306,35 @@ def support_chat():
 
     return jsonify({"reply": reply})
 
+@app.route("/api/support/chat", methods=["POST"])
+
+def support_chat():
+
+    from ai_engine import PublicAI, MemberAI, AdminAI
+
+    data = request.json
+
+    user_id = data.get("user_id", "")
+
+    user_name = data.get("user_name", "Member")
+
+    role = data.get("role", "public")
+
+    if role == "member":
+
+        ai = MemberAI(supabase)
+
+    elif role == "admin":
+
+        ai = AdminAI(supabase)
+
+    else:
+
+        ai = PublicAI(supabase)
+
+    reply = ai.respond(data.get("message", ""), user_id, user_name)
+
+    return jsonify({"reply": reply})
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

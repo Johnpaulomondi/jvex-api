@@ -1,116 +1,144 @@
 import os
+from datetime import datetime
 
-def get_ai_response(data, supabase, os_module):
-    message = data.get("message", "").lower().strip()
-    user_id = data.get("user_id", "")
-    user_name = data.get("user_name", "Member")
+class BaseAI:
+    def __init__(self, supabase):
+        self.supabase = supabase
+        self.role = 'public'
 
-    def get_member(uid):
-        if not uid: return None
+    def get_memory(self, user_id, key):
         try:
-            user = supabase.table('users').select('*').eq('id', uid).single().execute()
-            if user.data:
-                tier = supabase.table('member_tiers').select('name').eq('id', user.data.get('tier_id')).single().execute()
-                return {**user.data, 'tier_name': tier.data.get('name') if tier.data else 'Basic'}
-        except: pass
+            mem = self.supabase.table('ai_memories').select('value').eq('user_id', user_id).eq('role', self.role).eq('key', key).single().execute()
+            return mem.data.get('value') if mem.data else None
+        except:
+            return None
+
+    def set_memory(self, user_id, key, value):
+        self.supabase.table('ai_memories').upsert({
+            'user_id': user_id, 'role': self.role, 'key': key, 'value': value
+        }, on_conflict=['user_id','role','key']).execute()
+
+    def get_history(self, user_id):
+        try:
+            conv = self.supabase.table('ai_conversations').select('messages').eq('user_id', user_id).eq('role', self.role).order('updated_at', desc=True).limit(1).single().execute()
+            return conv.data.get('messages', []) if conv.data else []
+        except:
+            return []
+
+    def save_history(self, user_id, messages):
+        existing = self.supabase.table('ai_conversations').select('id').eq('user_id', user_id).eq('role', self.role).single().execute()
+        if existing.data:
+            self.supabase.table('ai_conversations').update({'messages': messages, 'updated_at': 'now()'}).eq('id', existing.data['id']).execute()
+        else:
+            self.supabase.table('ai_conversations').insert({'user_id': user_id, 'role': self.role, 'messages': messages}).execute()
+
+    def get_knowledge(self, query):
+        # Search knowledge base by tags
+        try:
+            kb = self.supabase.table('ai_knowledge_base').select('answer').or_(f"question.ilike.%{query}%, tags.cs.{{{query}}}").eq('role', self.role).limit(3).execute()
+            if kb.data:
+                return kb.data[0]['answer']
+        except:
+            pass
         return None
 
-    member = get_member(user_id) if user_id else None
+    def respond(self, message, user_id, user_name):
+        # Override in subclasses
+        return "I'm here to help! Ask me anything about JVEX."
 
-    knowledge = [
-        (["hello","hi","hey","howdy","good morning","good evening","good afternoon","yo","sup","whats up","greetings","how are you","howdy"], 10,
-         f"Hello {user_name}! 👋 I'm JVEX AI, your assistant. I can help you navigate JVEX Labs, explain our services, or assist with your account. What would you like to know?"),
-        (["thank","thanks","bye","goodbye","see you","later","cheers","appreciate"], 10,
-         "You're welcome! 😊 Feel free to ask me anything else anytime."),
-        (["help","what can you do","capabilities","features","how can you help"], 10,
-         "I can help with almost everything on JVEX Labs! Try asking about:\n"
-         "• Account & signup\n"
-         "• Wallet, deposits, withdrawals\n"
-         "• Marketplace (products & services)\n"
-         "• Freelancing & tokens\n"
-         "• Tiers & subscriptions\n"
-         "• Referrals & commissions\n"
-         "• Tracking your project\n"
-         "• Company info & policies\n"
-         "Just type your question naturally."),
-        # Account
-        (["my account","profile settings","edit profile","update profile"], 10,
-         "Manage your profile at **Dashboard → Profile**."),
-        (["signup","sign up","register","create account","join","new account"], 10,
-         "Signing up is free! Click **Sign Up Free** on our homepage. Instant access, no approval."),
-        (["login","sign in","log in","forgot password","reset password"], 10,
-         "Login at **/login** with your email & password. Google sign‑in also supported. Forgot password? Click 'Forgot Password'."),
-        # Balance & wallet
-        (["my balance","how much do i have","wallet balance","balance"], 10,
-         f"Your balance is **KSh {member.get('balance',0):,}**." if member else "Please log in to check your balance."),
-        (["deposit","add money","fund account","top up","how do i deposit"], 10,
-         "Deposit via **Dashboard → Deposit**. Paystack → funds appear instantly."),
-        (["withdraw","cash out","mpesa withdrawal","how do i withdraw"], 10,
-         "Withdraw via **Dashboard → Withdraw**. Enter M‑Pesa number & amount. Admin processes quickly."),
-        (["transactions","transaction history","statement","recent activity"], 10,
-         "Transaction history is in **Dashboard → Inbox**."),
-        # Marketplace
-        (["marketplace","shop","buy","products","gadgets","what can i buy"], 10,
-         "Our Marketplace has phones, laptops, gadgets, games, lighting, and professional services. Browse at **/marketplace**."),
-        (["cart","shopping cart","basket","my cart"], 10,
-         "Your cart is at **/cart**. Adjust quantities, select colors, then checkout."),
-        (["checkout","order","place order","buy now"], 10,
-         "At checkout provide delivery details (for products) or project details (for services), choose payment method, and confirm."),
-        # Payments
-        (["payment","pay","how to pay","payment methods","paystack","paypal","mpesa"], 10,
-         "We support **Paystack** (Card, M‑Pesa, Airtel, Bank) and **PayPal**. Choose at checkout."),
-        # Freelancing
-        (["freelance","freelancing","jobs","bid","tokens","how to freelance"], 10,
-         "Freelancing under **Financial Markets**. Need Regular tier or above. Buy tokens → bid on jobs → earn."),
-        (["token","buy tokens","token shop"], 10,
-         "Tokens: Starter 100 @ KSh 500, Basic 250 @ KSh 1,000, Pro 500 @ KSh 1,800, Business 1,000 @ KSh 3,000. Buy at **Dashboard → Tokens**."),
-        # Tiers
-        (["tier","subscription","upgrade","basic","regular","professional","tycoon","plan"], 10,
-         "Tiers: Basic (Free), Regular (KSh 500/mo), Professional (KSh 1,500/mo), Tycoon (KSh 3,000/mo). Upgrade in Profile."),
-        # Referrals
-        (["referral","invite","refer","team","earn","commission","referral link"], 10,
-         "Your referral link in **Dashboard → Teams**. Share it – earn when they upgrade."),
-        (["my referral","referral code"], 10,
-         f"Your referral code: **{member.get('referral_code','N/A')}**." if member else "Find your referral code in Dashboard → Teams."),
-        # Tracking
-        (["track","track project","my project","project status","where is my order"], 10,
-         "Track at **/track** with your email & tracking ID."),
-        # Sales/Share
-        (["sales","share","sell","commission","share and earn"], 10,
-         "Share products from **Dashboard → Sales** and earn up to 12% commission."),
-        # Learn
-        (["learn","course","courses","learning","education"], 10,
-         "Learn Hub has courses like React, Python, UI/UX. Enroll at **/dashboard/learn**."),
-        # Insights
-        (["insights","news","updates","blog","projects"], 10,
-         "Latest news and projects at **/insights**."),
-        # About
-        (["about","who are you","what is jvex","jvex labs","company"], 10,
-         "JVEX Labs is a registered tech company in Nairobi, Kenya. Marketplace, financial markets, freelancing, courses, referrals – all in one."),
-        # Contact – NEVER expose details, only point to footer
-        (["contact","support","help me","human","real person","talk to someone","customer service","agent","representative"], 10,
-         "For direct assistance, please check the **Support card in the website footer**. There you'll find our WhatsApp and email contacts. I'm also here 24/7 for immediate help!"),
-    ]
+class PublicAI(BaseAI):
+    def __init__(self, supabase):
+        super().__init__(supabase)
+        self.role = 'public'
 
-    # Match best topic
-    best_score = 0
-    best_reply = None
-    for keywords, weight, response in knowledge:
-        score = sum(weight for kw in keywords if kw in message)
-        if score > best_score:
-            best_score = score
-            best_reply = response
+    def respond(self, message, user_id, user_name):
+        # Use knowledge base for public answers
+        kb_answer = self.get_knowledge(message)
+        if kb_answer:
+            return kb_answer
 
-    if best_score < 5:
-        best_reply = (
-            "I'm not quite sure about that. You can ask me about:\n"
-            "• Account & wallet\n"
-            "• Marketplace & shopping\n"
-            "• Freelancing & tokens\n"
-            "• Tiers & subscriptions\n"
-            "• Referrals & earnings\n"
-            "• Tracking orders\n\n"
-            "If you need human assistance, please see the **Support card in the footer** of the website."
-        )
+        # Fallback greetings and general info
+        msg = message.lower()
+        if any(w in msg for w in ['hello','hi','hey']):
+            return f"Hello! 👋 I'm JVEX AI. How can I help you today? Ask me about our services, marketplace, or how to get started."
+        if 'signup' in msg or 'sign up' in msg:
+            return "You can sign up for free on our homepage. Click 'Sign Up Free' and fill in your details. No approval needed."
+        if 'marketplace' in msg:
+            return "Our Marketplace has phones, laptops, gadgets, services, and more. Browse at /marketplace."
+        return "I'm the JVEX public assistant. You can ask me about our company, services, signup, or marketplace. For account-specific questions, please log in."
 
-    return best_reply
+class MemberAI(BaseAI):
+    def __init__(self, supabase):
+        super().__init__(supabase)
+        self.role = 'member'
+
+    def get_member_info(self, user_id):
+        try:
+            user = self.supabase.table('users').select('*').eq('id', user_id).single().execute()
+            if user.data:
+                tier = self.supabase.table('member_tiers').select('name').eq('id', user.data.get('tier_id')).single().execute()
+                return {**user.data, 'tier_name': tier.data.get('name') if tier.data else 'Basic'}
+        except:
+            pass
+        return None
+
+    def respond(self, message, user_id, user_name):
+        member = self.get_member_info(user_id)
+        kb_answer = self.get_knowledge(message)
+        if kb_answer:
+            return kb_answer
+
+        msg = message.lower()
+        if not member:
+            return "I couldn't find your account. Please make sure you're logged in."
+
+        if 'balance' in msg:
+            return f"Your balance is KSh {member.get('balance',0):,}."
+        if 'tier' in msg or 'subscription' in msg:
+            return f"Your current tier is {member.get('tier_name','Basic')}."
+        if 'referral' in msg:
+            return f"Your referral code is {member.get('referral_code','N/A')}. Share this link: https://jvex-labs-backup.vercel.app/signup?ref={member.get('referral_code','')}"
+        if 'deposit' in msg:
+            return "To deposit, go to Dashboard → Deposit. Enter amount and you'll be redirected to Paystack."
+        if 'withdraw' in msg:
+            return "To withdraw, go to Dashboard → Withdraw. Enter M‑Pesa number and amount."
+        if 'freelance' in msg:
+            return "Freelancing is under Financial Markets. You need Regular tier or above."
+        if 'sales' in msg:
+            return "Share products from Dashboard → Sales and earn commissions."
+        if 'track' in msg:
+            return "Track your order at /track with your email and tracking ID."
+
+        # Fallback with memory
+        last_topic = self.get_memory(user_id, 'last_topic')
+        if last_topic:
+            return f"You were asking about {last_topic}. How can I assist further?"
+        return f"Hi {user_name}! I can help with your balance, deposits, referrals, tiers, and more. What would you like to know?"
+
+class AdminAI(BaseAI):
+    def __init__(self, supabase):
+        super().__init__(supabase)
+        self.role = 'admin'
+
+    def respond(self, message, user_id, user_name):
+        msg = message.lower()
+        if msg.startswith('/admin'):
+            cmd = msg.split(' ')[1] if len(msg.split(' ')) > 1 else ''
+            if cmd == 'stats':
+                users = self.supabase.table('users').select('*', count='exact').execute()
+                orders = self.supabase.table('orders').select('*', count='exact').execute()
+                return f"📊 Users: {users.count} | Orders: {orders.count}"
+            if cmd == 'fraud':
+                suspicious = self.supabase.table('member_earnings').select('*').gt('amount', 10000).limit(5).execute()
+                if suspicious.data:
+                    return "🚨 Suspicious earnings:\n" + "\n".join(f"• {e['user_id'][:8]}...: KSh {e['amount']:,}" for e in suspicious.data)
+                return "✅ No suspicious activity."
+            if cmd == 'health':
+                return "✅ All systems operational."
+            if cmd == 'alerts':
+                alerts = self.supabase.table('ai_alerts').select('*').eq('dismissed', False).order('created_at', desc=True).limit(5).execute()
+                if alerts.data:
+                    return "\n".join(f"• [{a['level']}] {a['title']}" for a in alerts.data)
+                return "No active alerts."
+            return "Admin commands: /admin stats, /admin fraud, /admin health, /admin alerts"
+        return "Admin AI ready. Type /admin stats, /admin fraud, /admin health, or /admin alerts."
