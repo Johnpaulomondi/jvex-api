@@ -244,3 +244,34 @@ def search_suggest():
     # Deduplicate and limit
     suggestions = list(dict.fromkeys(suggestions))[:5]
     return jsonify({"suggestions": suggestions})
+
+# ── Emergency Withdraw (Founder only) ──
+@app.route("/api/admin/emergency-withdraw", methods=["POST"])
+def emergency_withdraw():
+    data = request.json
+    user_id = data.get("user_id")
+    # Verify user is Tycoon/Founder
+    user = supabase.table('users').select('tier_id').eq('id', user_id).single().execute()
+    if not user.data:
+        return jsonify({"status": "error", "detail": "User not found"}), 404
+    tier = supabase.table('member_tiers').select('name').eq('id', user.data['tier_id']).single().execute()
+    if not tier.data or tier.data['name'] != 'Tycoon':
+        return jsonify({"status": "error", "detail": "Only Tycoon/Founder can perform this action"}), 403
+
+    # Get total balance from Paystack (simplified – sum all completed deposits)
+    txns = supabase.table('member_transactions').select('amount').eq('type', 'deposit').eq('status', 'completed').execute()
+    total = sum(tx.get('amount', 0) for tx in (txns.data or []))
+
+    # Record the withdrawal
+    ref = f"EMERG-{uuid.uuid4().hex[:8]}"
+    supabase.table('member_transactions').insert({
+        'user_id': user_id,
+        'type': 'emergency_withdraw',
+        'amount': total,
+        'status': 'completed',
+        'description': 'Emergency fund withdrawal by Founder',
+        'flutterwave_ref': ref,
+        'payment_method': 'paystack'
+    }).execute()
+
+    return jsonify({"status": "success", "message": f"Emergency withdrawal of KSh {total:,.2f} recorded", "amount": total, "ref": ref})
