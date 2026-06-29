@@ -349,3 +349,39 @@ def bank_withdraw():
     ref = f"BNK-{uuid.uuid4().hex[:8]}"
     supabase.table('bank_transactions').insert({"type":"withdrawal","amount":amount,"description":"Admin withdrawal to external account","reference":ref}).execute()
     return jsonify({"status":"success","message":f"KSh {amount:,.2f} withdrawn from JVEX Bank"})
+
+# ── Bank info (credentials) ──
+@app.route("/api/bank/info", methods=["GET"])
+def bank_info():
+    bank = supabase.table('jvex_bank').select('*').single().execute()
+    return jsonify(bank.data if bank.data else {})
+
+# ── Bank deposit (from admin) ──
+@app.route("/api/bank/deposit", methods=["POST"])
+def bank_deposit():
+    data = request.json
+    amount = float(data.get("amount", 0))
+    pin = data.get("pin", "")
+    bank = supabase.table('jvex_bank').select('*').single().execute()
+    if bank.data.get('withdrawal_pin') != pin:
+        return jsonify({"status":"error","detail":"Invalid PIN"}), 403
+    supabase.rpc('deposit_bank', {'p_amount': amount}).execute()
+    ref = f"BNK-DEP-{uuid.uuid4().hex[:8]}"
+    supabase.table('bank_transactions').insert({"type":"deposit","amount":amount,"description":"Manual deposit","reference":ref}).execute()
+    return jsonify({"status":"success","message":f"KSh {amount:,.2f} deposited"})
+
+# ── Bank withdrawal (to external) ──
+@app.route("/api/bank/withdraw", methods=["POST"])
+def bank_withdraw():
+    data = request.json
+    amount = float(data.get("amount", 0))
+    pin = data.get("pin", "")
+    bank = supabase.table('jvex_bank').select('*').single().execute()
+    if bank.data.get('withdrawal_pin') != pin:
+        return jsonify({"status":"error","detail":"Invalid PIN"}), 403
+    if bank.data.get('balance', 0) < amount:
+        return jsonify({"status":"error","detail":"Insufficient bank balance"}), 400
+    supabase.rpc('withdraw_bank', {'p_amount': amount}).execute()
+    ref = f"BNK-WTH-{uuid.uuid4().hex[:8]}"
+    supabase.table('bank_transactions').insert({"type":"withdrawal","amount":amount,"description":"Manual withdrawal to external","reference":ref}).execute()
+    return jsonify({"status":"success","message":f"KSh {amount:,.2f} withdrawn"})
