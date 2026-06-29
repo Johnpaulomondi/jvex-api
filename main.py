@@ -385,3 +385,100 @@ def bank_withdraw():
     ref = f"BNK-WTH-{uuid.uuid4().hex[:8]}"
     supabase.table('bank_transactions').insert({"type":"withdrawal","amount":amount,"description":"Manual withdrawal to external","reference":ref}).execute()
     return jsonify({"status":"success","message":f"KSh {amount:,.2f} withdrawn"})
+import hashlib, hmac
+
+# ── Bank Admin Auth ──
+@app.route("/api/bank/admin/auth", methods=["POST"])
+def bank_admin_auth():
+    data = request.json
+    user_id = data.get("user_id")
+    pin = data.get("pin")
+    admin = supabase.table('bank_admins').select('*').eq('user_id', user_id).single().execute()
+    if not admin.data:
+        return jsonify({"status": "error", "detail": "Not a bank admin"}), 403
+    if not hmac.compare_digest(admin.data.get('pin_hash', ''), hashlib.sha256(pin.encode()).hexdigest()):
+        return jsonify({"status": "error", "detail": "Invalid PIN"}), 403
+    return jsonify({"status": "ok", "role": admin.data['role']})
+
+# ── Set/update admin PIN ──
+@app.route("/api/bank/admin/set-pin", methods=["POST"])
+def bank_admin_set_pin():
+    data = request.json
+    user_id = data.get("user_id")
+    pin = data.get("pin")
+    master = data.get("master_password", "")
+    bank = supabase.table('jvex_bank').select('master_password_hash').single().execute()
+    if not hmac.compare_digest(bank.data.get('master_password_hash', ''), hashlib.sha256(master.encode()).hexdigest()):
+        return jsonify({"status": "error", "detail": "Invalid master password"}), 403
+    pin_hash = hashlib.sha256(pin.encode()).hexdigest()
+    supabase.table('bank_admins').upsert({"user_id": user_id, "pin_hash": pin_hash}).execute()
+    return jsonify({"status": "success"})
+
+# ── Treasury balance ──
+@app.route("/api/bank/treasury", methods=["GET"])
+def bank_treasury():
+    bank = supabase.table('jvex_bank').select('*').single().execute()
+    return jsonify(bank.data if bank.data else {})
+
+# ── Bank accounts list (admin) ──
+@app.route("/api/bank/accounts", methods=["GET"])
+def bank_accounts():
+    accounts = supabase.table('bank_accounts').select('*, users(full_name,email)').execute()
+    return jsonify(accounts.data)
+
+# ── Member balance ──
+@app.route("/api/bank/my-balance", methods=["GET"])
+def my_bank_balance():
+    user_id = request.args.get("user_id")
+    account = supabase.table('bank_accounts').select('*').eq('user_id', user_id).single().execute()
+    return jsonify(account.data if account.data else {"internal_balance":0,"external_balance":0})
+
+# ── Internal transfer ──
+@app.route("/api/bank/transfer", methods=["POST"])
+def bank_transfer():
+    data = request.json
+    from_id = data.get("from_user_id")
+    to_id = data.get("to_user_id")
+    amount = float(data.get("amount"))
+    # Deduct from sender
+    from_acc = supabase.table('bank_accounts').select('*').eq('user_id', from_id).single().execute()
+    if from_acc.data.get('internal_balance',0) < amount:
+        return jsonify({"status":"error","detail":"Insufficient internal balance"}), 400
+    supabase.table('bank_accounts').update({"internal_balance": from_acc.data['internal_balance'] - amount}).eq('user_id', from_id).execute()
+    # Credit receiver
+    to_acc = supabase.table('bank_accounts').select('*').eq('user_id', to_id).single().execute()
+    supabase.table('bank_accounts').update({"internal_balance": (to_acc.data.get('internal_balance',0) + amount)}).eq('user_id', to_id).execute()
+    # Log
+    ref = f"TRF-{uuid.uuid4().hex[:8]}"
+    supabase.table('transfers').insert({"from_user_id":from_id,"to_user_id":to_id,"amount":amount,"reference":ref}).execute()
+    return jsonify({"status":"success","reference":ref})
+
+# ── Approve withdrawal ──
+@app.route("/api/bank/approve-withdrawal", methods=["POST"])
+def approve_withdrawal():
+    data = request.json
+    withdrawal_id = data.get("withdrawal_id")
+    supabase.table('withdrawals').update({"status":"completed"}).eq('id', withdrawal_id).execute()
+    w = supabase.table('withdrawals').select('*').eq('id', withdrawal_id).single().execute()
+    if w.data:
+        supabase.table('treasury_logs').insert({"type":"withdrawal","amount":w.data['amount'],"description":"Approved withdrawal","reference":w.data['reference']}).execute()
+    return jsonify({"status":"ok"})
+
+# ── Flag fraud ──
+@app.route("/api/bank/flag-fraud", methods=["POST"])
+def flag_fraud():
+    data = request.json
+    supabase.table('bank_fraud_flags').insert({
+        "transaction_type": data.get("transaction_type"),
+        "transaction_id": data.get("transaction_id"),
+        "reason": data.get("reason")
+    }).execute()
+    return jsonify({"status":"ok"})
+
+# ── Reserve ratio update ──
+@app.route("/api/bank/reserve", methods=["POST"])
+def bank_reserve():
+    data = request.json
+    ratio = float(data.get("ratio", 0.2))
+    supabase.table('jvex_bank').update({"reserve_ratio": ratio}).eq('id', supabase.table('jvex_bank').select('id').single().execute().data['id']).execute()
+    return jsonify({"status":"ok"})
