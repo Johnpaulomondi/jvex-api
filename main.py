@@ -275,3 +275,77 @@ def emergency_withdraw():
     }).execute()
 
     return jsonify({"status": "success", "message": f"Emergency withdrawal of KSh {total:,.2f} recorded", "amount": total, "ref": ref})
+
+# ── Fraud Management ──
+@app.route("/api/admin/fraud/update", methods=["POST"])
+def update_fraud_case():
+    data = request.json
+    case_id = data.get("case_id")
+    action = data.get("action")
+    supabase.table('fraud_cases').update({"status": action, "action_taken": action, "updated_at": "now()"}).eq('id', case_id).execute()
+    if action == 'block':
+        user_id = data.get("user_id")
+        if user_id: supabase.table('users').update({"account_status": "suspended"}).eq('id', user_id).execute()
+    return jsonify({"status": "ok"})
+
+@app.route("/api/admin/fraud/list", methods=["GET"])
+def list_fraud_cases():
+    cases = supabase.table('fraud_cases').select('*').order('created_at', desc=True).limit(20).execute()
+    return jsonify(cases.data)
+
+# ── Virtual Bank ──
+@app.route("/api/bank/balance", methods=["GET"])
+def bank_balance():
+    bank = supabase.table('jvex_bank').select('balance').single().execute()
+    return jsonify({"balance": bank.data.get('balance', 0) if bank.data else 0})
+
+@app.route("/api/bank/transactions", methods=["GET"])
+def bank_transactions():
+    txns = supabase.table('bank_transactions').select('*').order('created_at', desc=True).limit(20).execute()
+    return jsonify(txns.data)
+
+# ── Emergency Withdraw (to virtual bank) ──
+@app.route("/api/admin/emergency-withdraw", methods=["POST"])
+def emergency_withdraw():
+    data = request.json
+    user_id = data.get("user_id")
+    user = supabase.table('users').select('tier_id').eq('id', user_id).single().execute()
+    if not user.data: return jsonify({"status":"error","detail":"User not found"}), 404
+    tier = supabase.table('member_tiers').select('name').eq('id', user.data['tier_id']).single().execute()
+    if not tier.data or tier.data['name'] != 'Tycoon':
+        return jsonify({"status":"error","detail":"Only Tycoon/Founder can perform this action"}), 403
+
+    txns = supabase.table('member_transactions').select('amount').eq('type','deposit').eq('status','completed').execute()
+    total = sum(tx.get('amount',0) for tx in (txns.data or []))
+    supabase.rpc('deposit_bank', {'p_amount': total}).execute()
+    ref = f"EMERG-{uuid.uuid4().hex[:8]}"
+    supabase.table('bank_transactions').insert({"type":"emergency_withdraw","amount":total,"description":"Emergency withdrawal by Founder","reference":ref}).execute()
+    return jsonify({"status":"success","message":f"Emergency withdrawal of KSh {total:,.2f} secured in JVEX Bank","amount":total,"ref":ref})
+
+# ── Auto-deposit net profit ──
+@app.route("/api/admin/deposit-profit", methods=["POST"])
+def deposit_profit():
+    all_txns = supabase.table('member_transactions').select('type,amount').execute()
+    total_in = sum(t.get('amount',0) for t in all_txns.data if t['type']=='deposit')
+    total_out = sum(t.get('amount',0) for t in all_txns.data if t['type'] in ('withdrawal','payout'))
+    users = supabase.table('users').select('balance').execute()
+    member_balances = sum(u.get('balance',0) for u in users.data)
+    net_profit = total_in - total_out - member_balances
+    if net_profit > 0:
+        supabase.rpc('deposit_bank', {'p_amount': net_profit}).execute()
+        ref = f"PROFIT-{uuid.uuid4().hex[:8]}"
+        supabase.table('bank_transactions').insert({"type":"profit_deposit","amount":net_profit,"description":"Auto-deposit net profit","reference":ref}).execute()
+        return jsonify({"status":"success","message":f"KSh {net_profit:,.2f} deposited to JVEX Bank"})
+    return jsonify({"status":"info","message":"No profit to deposit"})
+
+# ── Withdraw from bank to external ──
+@app.route("/api/bank/withdraw", methods=["POST"])
+def bank_withdraw():
+    data = request.json
+    amount = float(data.get("amount", 0))
+    bank = supabase.table('jvex_bank').select('balance').single().execute()
+    if bank.data.get('balance',0) < amount: return jsonify({"status":"error","detail":"Insufficient bank balance"}), 400
+    supabase.rpc('withdraw_bank', {'p_amount': amount}).execute()
+    ref = f"BNK-{uuid.uuid4().hex[:8]}"
+    supabase.table('bank_transactions').insert({"type":"withdrawal","amount":amount,"description":"Admin withdrawal to external account","reference":ref}).execute()
+    return jsonify({"status":"success","message":f"KSh {amount:,.2f} withdrawn from JVEX Bank"})
