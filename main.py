@@ -62,7 +62,7 @@ def share_product(product_id):
         name = 'Join Jvex Labs'
         desc = "Earn, invest, freelance, and grow with Africa's smartest digital platform."
         img = 'https://jvex-labs-backup.vercel.app/referral-card.svg'
-        redirect_url = f'{redirect_base}/signup'
+        redirect_url = f'{redirect_base}/invite'
     else:
         try:
             prod = supabase.table('products').select('*').eq('id', product_id).single().execute()
