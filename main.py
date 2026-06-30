@@ -48,37 +48,82 @@ def contact_info():
         "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")
     })
 
-# ── Share route ──
+# ── Share route (enhanced) ──
 @app.route("/s/<product_id>", methods=["GET"])
 def share_product(product_id):
     ref = request.args.get('ref', '')
     name = request.args.get('name', 'Jvex Labs')
-    desc = request.args.get('desc', 'Discover products and services on Jvex Labs.')
-    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/logo.png')
-    if not request.args.get('name') or not request.args.get('img'):
+    desc = request.args.get('desc', 'Build your digital future.')
+    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/referral-card.svg')
+    redirect_base = 'https://jvex-labs-backup.vercel.app'
+
+    # Special invite card
+    if product_id == 'invite' or product_id == 'referral':
+        name = 'Join Jvex Labs'
+        desc = "Earn, invest, freelance, and grow with Africa's smartest digital platform."
+        img = 'https://jvex-labs-backup.vercel.app/referral-card.svg'
+        redirect_url = f'{redirect_base}/signup'
+    else:
         try:
-            product = supabase.table('products').select('*').eq('id', product_id).single().execute()
-            service = supabase.table('services').select('*').eq('id', product_id).single().execute()
-            item = product.data or service.data
+            prod = supabase.table('products').select('*').eq('id', product_id).single().execute()
+            if prod.data:
+                item = prod.data
+                typ = 'product'
+            else:
+                svc = supabase.table('services').select('*').eq('id', product_id).single().execute()
+                if svc.data:
+                    item = svc.data
+                    typ = 'service'
+                else:
+                    ins = supabase.table('featured_updates').select('*').eq('id', product_id).single().execute()
+                    if ins.data:
+                        item = ins.data
+                        typ = 'insight'
+                    else:
+                        proj = supabase.table('projects').select('*').eq('id', product_id).single().execute()
+                        if proj.data:
+                            item = proj.data
+                            typ = 'project'
+                        else:
+                            item = None
             if item:
-                name = item.get('name') or item.get('service_name') or name
-                desc = (item.get('description', '')[:200] or desc)
-                img = item.get('image_url') or img
-        except: pass
-    user_agent = request.headers.get('User-Agent', '')
-    is_crawler = any(bot in user_agent for bot in ['WhatsApp','facebookexternalhit','Twitterbot','LinkedInBot','Discordbot','TelegramBot','Slackbot','Pinterest','googlebot'])
+                name = item.get('name') or item.get('service_name') or item.get('title') or name
+                desc = (item.get('description') or item.get('short_description') or item.get('subtitle') or '')[:200] or desc
+                img = item.get('image_url') or item.get('cover_image') or img
+                if typ == 'product':
+                    redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
+                elif typ == 'service':
+                    redirect_url = f'{redirect_base}/service/{product_id}?ref={ref}'
+                elif typ == 'insight':
+                    redirect_url = f'{redirect_base}/insight/{product_id}'
+                elif typ == 'project':
+                    redirect_url = f'{redirect_base}/track?id={product_id}'
+                else:
+                    redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
+            else:
+                redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
+        except:
+            redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
+
+    ua = request.headers.get('User-Agent', '')
+    is_crawler = any(bot in ua for bot in ['WhatsApp','facebookexternalhit','Twitterbot','LinkedInBot','Discordbot','TelegramBot','Slackbot','Pinterest','googlebot'])
     if is_crawler:
         html = f"""<!doctype html><html lang="en"><head>
         <meta charset="UTF-8" />
         <meta property="og:title" content="{name}" />
         <meta property="og:description" content="{desc}" />
         <meta property="og:image" content="{img}" />
-        <meta property="og:url" content="https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}" />
-        <meta property="og:type" content="product" />
+        <meta property="og:url" content="{redirect_url}" />
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="Jvex Labs" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="{name}" />
+        <meta name="twitter:description" content="{desc}" />
+        <meta name="twitter:image" content="{img}" />
         </head><body></body></html>"""
         return html
     else:
-        return redirect(f"https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}")
+        return redirect(redirect_url, code=302)
 
 # ── Sales Share ──
 @app.route("/api/sales/share", methods=["POST"])
