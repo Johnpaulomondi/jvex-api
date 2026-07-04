@@ -48,62 +48,71 @@ def contact_info():
         "email": os.getenv("SUPPORT_EMAIL", "omoshdeleon47@gmail.com")
     })
 
-# ── Share route (enhanced) ──
+# ── Share route (fixed for services & invite) ──
 @app.route("/s/<product_id>", methods=["GET"])
 def share_product(product_id):
     ref = request.args.get('ref', '')
-    name = request.args.get('name', 'Jvex Labs')
-    desc = request.args.get('desc', 'Build your digital future.')
-    img = request.args.get('img', 'https://jvex-labs-backup.vercel.app/referral-card.svg')
-    redirect_base = 'https://jvex-labs-backup.vercel.app'
+    # Default fallback – a PNG placeholder that always works
+    default_img = 'https://placehold.co/1200x630/0D1F4E/C87941?text=Jvex+Labs'
+    default_name = 'Jvex Labs'
+    default_desc = 'Discover products, services, and investment opportunities.'
 
-    # Special invite card
+    # Invite card (special case)
     if product_id == 'invite' or product_id == 'referral':
         name = 'Join Jvex Labs'
         desc = "Earn, invest, freelance, and grow with Africa's smartest digital platform."
-        img = 'https://jvex-labs-backup.vercel.app/referral-card.svg'
-        redirect_url = f'{redirect_base}/invite'
+        img = 'https://placehold.co/1200x630/C87941/0D1F4E?text=Join+Jvex+Labs&font=Orbitron'
+        redirect_url = 'https://jvex-labs-backup.vercel.app/invite'
     else:
         try:
+            # Try products first
             prod = supabase.table('products').select('*').eq('id', product_id).single().execute()
             if prod.data:
                 item = prod.data
                 typ = 'product'
+                name = item.get('name', default_name)
+                desc = (item.get('description', '') or '')[:200] or default_desc
+                img = item.get('image_url') or default_img
+                redirect_url = f'https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}'
             else:
+                # Try services
                 svc = supabase.table('services').select('*').eq('id', product_id).single().execute()
                 if svc.data:
                     item = svc.data
                     typ = 'service'
+                    name = item.get('service_name') or item.get('title') or default_name
+                    desc = (item.get('description', '') or '')[:200] or default_desc
+                    img = item.get('image_url') or default_img
+                    redirect_url = f'https://jvex-labs-backup.vercel.app/service/{product_id}?ref={ref}'
                 else:
+                    # Try insights
                     ins = supabase.table('featured_updates').select('*').eq('id', product_id).single().execute()
                     if ins.data:
                         item = ins.data
-                        typ = 'insight'
+                        name = item.get('title') or default_name
+                        desc = (item.get('description', '') or '')[:200] or default_desc
+                        img = item.get('image_url') or default_img
+                        redirect_url = f'https://jvex-labs-backup.vercel.app/insight/{product_id}'
                     else:
+                        # Try projects
                         proj = supabase.table('projects').select('*').eq('id', product_id).single().execute()
                         if proj.data:
                             item = proj.data
-                            typ = 'project'
+                            name = item.get('name') or default_name
+                            desc = (item.get('description', '') or '')[:200] or default_desc
+                            img = item.get('image_url') or default_img
+                            redirect_url = f'https://jvex-labs-backup.vercel.app/track?id={product_id}'
                         else:
-                            item = None
-            if item:
-                name = item.get('name') or item.get('service_name') or item.get('title') or name
-                desc = (item.get('description') or item.get('short_description') or item.get('subtitle') or '')[:200] or desc
-                img = item.get('image_url') or item.get('cover_image') or img
-                if typ == 'product':
-                    redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
-                elif typ == 'service':
-                    redirect_url = f'{redirect_base}/service/{product_id}?ref={ref}'
-                elif typ == 'insight':
-                    redirect_url = f'{redirect_base}/insight/{product_id}'
-                elif typ == 'project':
-                    redirect_url = f'{redirect_base}/track?id={product_id}'
-                else:
-                    redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
-            else:
-                redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
+                            # Not found – generic redirect
+                            name = default_name
+                            desc = default_desc
+                            img = default_img
+                            redirect_url = f'https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}'
         except:
-            redirect_url = f'{redirect_base}/product/{product_id}?ref={ref}'
+            name = default_name
+            desc = default_desc
+            img = default_img
+            redirect_url = f'https://jvex-labs-backup.vercel.app/product/{product_id}?ref={ref}'
 
     ua = request.headers.get('User-Agent', '')
     is_crawler = any(bot in ua for bot in ['WhatsApp','facebookexternalhit','Twitterbot','LinkedInBot','Discordbot','TelegramBot','Slackbot','Pinterest','googlebot'])
