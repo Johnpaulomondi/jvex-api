@@ -62,7 +62,7 @@ def share_product(product_id):
         name = 'Join Jvex Labs'
         desc = "Earn, invest, freelance, and grow with Africa's smartest digital platform."
         img = 'https://placehold.co/1200x630/C87941/0D1F4E?text=Join+Jvex+Labs&font=Orbitron'
-        redirect_url = 'https://jvex-labs-backup.vercel.app/invite'
+        redirect_url = f'https://jvex-labs-backup.vercel.app/invite?ref={ref}'
     else:
         try:
             # Try products first
