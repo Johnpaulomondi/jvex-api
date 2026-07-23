@@ -680,3 +680,75 @@ def ahc_paystack_callback():
         
         return jsonify({"status": "success"})
     return jsonify({"status": "ignored"})
+
+# ═══════════════════════════════════════════
+#  AHC PAYMENT ENDPOINTS (shared Paystack)
+# ═══════════════════════════════════════════
+
+import requests as req_ahc
+
+AHC_SUPABASE_URL = os.getenv("AHC_SUPABASE_URL", "https://tvdcupkmpkqxeerlerjz.supabase.co")
+AHC_SUPABASE_ANON_KEY = os.getenv("AHC_SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2ZGN1cGttcGtxeGVlcmxlcmp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5NzE4NDAsImV4cCI6MjA5MzU0Nzg0MH0.xq4kQ2nCOwQVjTCDgBSj6dKrkLlGs_bmBKMUd9WhKmc")
+
+ahc_headers = {"apikey": AHC_SUPABASE_ANON_KEY, "Authorization": f"Bearer {AHC_SUPABASE_ANON_KEY}", "Content-Type": "application/json"}
+
+@app.route("/api/ahc/initialize-payment", methods=["POST"])
+def ahc_initialize_payment():
+    data = request.json
+    email = data.get("email", "member@ahc.com")
+    amount = int(float(data.get("amount", 0)) * 100)
+    ref = f"AHC-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "email": email,
+        "amount": amount,
+        "reference": ref,
+        "callback_url": "https://jvex-api.onrender.com/api/ahc/paystack-callback",
+        "metadata": {
+            "membership_no": data.get("membership_no", ""),
+            "contribution_type": data.get("contribution_type", "savings"),
+            "period": data.get("period"),
+            "week": data.get("week"),
+            "full_name": data.get("full_name", ""),
+            "phone": data.get("phone", ""),
+            "national_id": data.get("national_id", ""),
+        }
+    }
+    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}", "Content-Type": "application/json"}
+    resp = req_ahc.post("https://api.paystack.co/transaction/initialize", json=payload, headers=headers)
+    result = resp.json()
+    if result.get("status"):
+        return jsonify({"status": "success", "authorization_url": result["data"]["authorization_url"], "reference": ref})
+    return jsonify({"status": "error", "detail": result.get("message", "Failed")}), 400
+
+@app.route("/api/ahc/paystack-callback", methods=["POST"])
+def ahc_paystack_callback():
+    event = request.json
+    if event and event.get("event") == "charge.success":
+        d = event["data"]
+        meta = d.get("metadata", {})
+        amount = float(d.get("amount", 0)) / 100
+        
+        # Insert into AHC contributions table
+        payload = {
+            "membership_no": meta.get("membership_no"),
+            "contribution_type": meta.get("contribution_type", "savings"),
+            "amount": amount,
+            "period": meta.get("period"),
+            "week": meta.get("week"),
+            "status": "completed",
+            "mpesa_message": f"Paystack: {d.get('reference')}",
+            "created_at": "now()"
+        }
+        req_ahc.post(f"{AHC_SUPABASE_URL}/rest/v1/contributions", headers=ahc_headers, json=payload)
+        
+        # Update member balances in AHC
+        if meta.get("membership_no"):
+            member_no = meta["membership_no"]
+            ctype = meta.get("contribution_type", "savings")
+            if ctype in ("welfare_p1", "welfare_p2"):
+                req_ahc.patch(f"{AHC_SUPABASE_URL}/rest/v1/members?membership_no=eq.{member_no}", headers=ahc_headers, json={"welfare": amount})
+            elif ctype == "savings":
+                req_ahc.patch(f"{AHC_SUPABASE_URL}/rest/v1/members?membership_no=eq.{member_no}", headers=ahc_headers, json={"savings": amount})
+        
+        return jsonify({"status": "success"})
+    return jsonify({"status": "ignored"})
