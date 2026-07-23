@@ -270,6 +270,9 @@ def support_chat():
     reply = ai.respond(data.get("message", ""), user_id, user_name)
     return jsonify({"reply": reply})
 
+
+from ahc_routes import register_ahc_routes
+register_ahc_routes(app, PAYSTACK_SECRET)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
 
