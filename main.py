@@ -583,11 +583,48 @@ def ahc_paystack_callback():
         d = event["data"]
         meta = d.get("metadata", {})
         amount = float(d.get("amount", 0)) / 100
-        
-        # Insert into AHC contributions table
+        member_no = meta.get("membership_no")
+        ctype = meta.get("contribution_type", "savings")
+
+        # If it's a registration fee, create the member first
+        if ctype == "registration_fee":
+            full_name = meta.get("full_name", "")
+            phone = meta.get("phone", "")
+            national_id = meta.get("national_id", "")
+            # Check if member exists
+            check = req_ahc.get(
+                f"{AHC_SUPABASE_URL}/rest/v1/members?or=(phone.eq.{phone},national_id.eq.{national_id})",
+                headers=ahc_headers
+            )
+            members = check.json() if check.ok else []
+            if not members:
+                # Generate membership number
+                count_resp = req_ahc.get(
+                    f"{AHC_SUPABASE_URL}/rest/v1/members?select=id",
+                    headers={**ahc_headers, "Prefer": "count=exact"}
+                )
+                count = count_resp.headers.get("content-range", "0/0").split("/")[1]
+                new_no = f"AHC-{int(count)+1:03d}"
+                # Insert new member
+                new_member = {
+                    "membership_no": new_no,
+                    "name": full_name,
+                    "phone": phone,
+                    "email": meta.get("email", ""),
+                    "national_id": national_id,
+                    "status": "Active",
+                    "savings": 0,
+                    "welfare": 0,
+                    "shares": 0,
+                    "security_code": f"AHC{phone[-4:]}{national_id[-4:]}",
+                }
+                req_ahc.post(f"{AHC_SUPABASE_URL}/rest/v1/members", headers=ahc_headers, json=new_member)
+                member_no = new_no
+
+        # Insert contribution
         payload = {
-            "membership_no": meta.get("membership_no"),
-            "contribution_type": meta.get("contribution_type", "savings"),
+            "membership_no": member_no or None,
+            "contribution_type": ctype,
             "amount": amount,
             "period": meta.get("period"),
             "week": meta.get("week"),
@@ -595,18 +632,25 @@ def ahc_paystack_callback():
             "mpesa_message": f"Paystack: {d.get('reference')}",
             "created_at": "now()"
         }
+        if ctype == "registration_fee":
+            payload["contribution_category"] = "registration_fee"
+            payload["full_name"] = meta.get("full_name", "")
+            payload["phone"] = meta.get("phone", "")
+            payload["national_id"] = meta.get("national_id", "")
+            payload["email"] = meta.get("email", "")
+
         req_ahc.post(f"{AHC_SUPABASE_URL}/rest/v1/contributions", headers=ahc_headers, json=payload)
-        
-        # Update member balances in AHC
-        if meta.get("membership_no"):
-            member_no = meta["membership_no"]
-            ctype = meta.get("contribution_type", "savings")
+
+        # Update member balances
+        if member_no:
             if ctype in ("welfare_p1", "welfare_p2"):
                 req_ahc.patch(f"{AHC_SUPABASE_URL}/rest/v1/members?membership_no=eq.{member_no}", headers=ahc_headers, json={"welfare": amount})
             elif ctype == "savings":
                 req_ahc.patch(f"{AHC_SUPABASE_URL}/rest/v1/members?membership_no=eq.{member_no}", headers=ahc_headers, json={"savings": amount})
-        
-        return jsonify({"status": "success"})
+
+        # Redirect user back to AHC
+        return redirect("https://jvex-labs-backup.vercel.app/ahc/", code=302)
+
     return jsonify({"status": "ignored"})
 
 # ═══════════════════════════════════════════
