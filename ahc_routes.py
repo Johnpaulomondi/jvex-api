@@ -103,6 +103,7 @@ def register_ahc_routes(app, paystack_secret):
                 elif ctype == "savings":
                     requests.patch(f"{AHC_SUPABASE_URL}/rest/v1/members?membership_no=eq.{member_no}", headers=ahc_headers, json={"savings": amount})
 
-            return redirect("https://jvex-labs-backup.vercel.app/ahc/", code=302)
+            redirect_url = f"https://jvex-labs-backup.vercel.app/ahc/?payment=success&type={ctype}&amount={amount}"
+        return redirect(redirect_url, code=302)
 
         return jsonify({"status": "ignored"})
